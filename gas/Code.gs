@@ -528,7 +528,10 @@ function handle_(raw) {
       default: throw new Error('알 수 없는 요청: ' + req.action);
     }
   } catch (err) {
-    return json_({ ok: false, error: err.message, auth: err.name === 'AuthError' });
+    // 잠금 대기 초과·구글 서비스 일시 오류는 화면이 잠시 뒤 자동으로 다시 보냄
+    const retry = err.name === 'BusyError' ||
+      /Lock|잠금|Service|서비스|timed out|시간 초과|Exceeded|초과|try again|다시 시도|INTERNAL/i.test(err.message);
+    return json_({ ok: false, error: err.message, auth: err.name === 'AuthError', retry: retry && err.name !== 'AuthError' });
   }
 }
 
@@ -701,9 +704,11 @@ function addTrip_(trip) {
   if (!parseDate_(trip.dep)) throw new Error('출국일을 입력해 주세요');
   return mutate_(store => {
     const existing = new Set(store.rows.map(r => r[COL.PERSON - 1] + '|' + formatIso_(parseDate_(r[COL.DEP - 1]))));
+    const ids = new Set(store.rows.map(r => String(r[COL.ID - 1])));
     const texts = requestTexts_(trip.countries);
     const skipped = [];
     people.forEach(person => {
+      if (ids.has(String((trip.ids || {})[person]))) return;   // 같은 요청이 두 번 온 경우: 이미 저장됨
       if (existing.has(person + '|' + trip.dep)) { skipped.push(person); return; }
       store.rows.push(newRow_({
         ID: safeId_((trip.ids || {})[person]), PERSON: person, DEP: parseDate_(trip.dep), RET: parseDate_(trip.ret) || '',
@@ -753,8 +758,12 @@ function importTrips_(person, trips) {
   });
 }
 
+/** 이미 지워졌으면(재시도로 두 번 온 경우 등) 그냥 성공으로 봄 */
 function deleteTrip_(id) {
-  return mutate_(store => { store.rows.splice(findIndexById_(store, id), 1); });
+  return mutate_(store => {
+    const i = store.rows.findIndex(r => String(r[COL.ID - 1]) === String(id));
+    if (i >= 0) store.rows.splice(i, 1);
+  });
 }
 
 /* ───────────────────────── 공통 ───────────────────────── */
@@ -974,6 +983,10 @@ function newId_() {
 
 function withLock_(fn) {
   const lock = LockService.getScriptLock();
-  lock.waitLock(20000);
+  if (!lock.tryLock(30000)) {
+    const err = new Error('다른 저장이 진행 중이라 잠시 뒤 다시 저장할게요');
+    err.name = 'BusyError';
+    throw err;
+  }
   try { return fn(); } finally { lock.releaseLock(); }
 }
