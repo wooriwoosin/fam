@@ -26,8 +26,8 @@
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
   .person h2 { margin: 0 0 10px; font-size: 17px; }
   .person h2 small { color: var(--muted); font-weight: 400; font-size: 13px; }
-  .nums { display: grid; grid-template-columns: repeat(3, 1fr); text-align: center; gap: 6px; margin-bottom: 10px; }
-  .nums b { display: block; font-size: 24px; color: var(--accent); }
+  .nums { display: grid; grid-template-columns: repeat(4, 1fr); text-align: center; gap: 6px; margin-bottom: 10px; }
+  .nums b { display: block; font-size: 22px; color: var(--accent); }
   .nums span { font-size: 12px; color: var(--muted); }
   .flags { display: flex; flex-wrap: wrap; gap: 6px; }
   .chip { display: inline-flex; align-items: center; gap: 4px; background: var(--accent-soft); border-radius: 999px;
@@ -36,6 +36,14 @@
   .chip .x { border: 0; background: none; cursor: pointer; color: var(--muted); padding: 0 0 0 2px; font-size: 14px; }
   .chip.unknown { background: #ffe1e1; }
   .note { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  .cities { color: var(--muted); font-size: 12px; margin-left: 2px; }
+  .crow { border: 1px solid var(--line); border-radius: 12px; padding: 10px; margin-bottom: 8px; background: #fff; }
+  .crow .flags { margin-top: 8px; align-items: center; }
+  .crow input { padding: 6px 10px; font-size: 14px; border-radius: 999px; width: 140px; flex: 0 0 auto; }
+  .citychip .x { border: 0; background: none; cursor: pointer; color: var(--muted); padding: 0 4px; font-size: 14px; }
+  .citychip { display: inline-flex; align-items: center; gap: 2px; background: #eef1f6; border-radius: 999px; padding: 3px 4px 3px 10px; font-size: 13px; }
+  .tcountry { text-align: right; margin-bottom: 4px; }
+  .tcount { font-size: 12px; color: var(--muted); text-align: right; margin-top: 2px; }
   .missing { color: #a66b00; font-size: 12px; margin-top: 8px; }
   table { width: 100%; border-collapse: collapse; }
   th, td { padding: 8px 6px; border-bottom: 1px solid var(--line); text-align: left; font-size: 14px; }
@@ -127,8 +135,8 @@
         <div><label>출국일</label><input type="date" id="dep"></div>
         <div><label>입국일</label><input type="date" id="ret"></div>
       </div>
-      <label>다녀온 나라 (여러 나라면 하나씩 추가)</label>
-      <input type="text" id="countryInput" list="countryList" placeholder="예: 일본, 다낭, 발리 … 입력 후 Enter">
+      <label>다녀온 나라 · 도시 (나라를 추가한 뒤, 나라마다 도시를 넣어 주세요)</label>
+      <input type="text" id="countryInput" list="countryList" placeholder="나라 또는 도시 입력 후 Enter (예: 일본, 오사카, 다낭)">
       <datalist id="countryList"></datalist>
       <div class="flags picked" id="picked"></div>
       <label>메모</label>
@@ -226,11 +234,33 @@
     showTab(b.dataset.tab);
   });
 
+  const normKey = t => String(t).toLowerCase().replace(/\s+/g, '');
   function findCountry(text) {
-    const k = text.toLowerCase().replace(/\s+/g, '');
-    return DATA.countries.find(c => c.name.replace(/\s+/g, '').toLowerCase() === k || c.code.toLowerCase() === k ||
-      (c.aliases || []).some(a => a.toLowerCase().replace(/\s+/g, '') === k));
+    const k = normKey(text);
+    return DATA.countries.find(c => normKey(c.name) === k || c.code.toLowerCase() === k) ||
+      DATA.countries.find(c => (c.aliases || []).some(a => normKey(a) === k));
   }
+  /** 도시 이름 → { name, country } (목록 + 가족이 이미 입력한 도시) */
+  function findCity(text) {
+    const k = normKey(text);
+    for (const code of Object.keys(DATA.cities || {})) {
+      const hit = DATA.cities[code].find(c => normKey(c) === k);
+      const country = hit && DATA.countries.find(c => c.code === code);
+      if (country) return { name: hit, country: country };
+    }
+    for (const t of DATA.trips) for (const c of t.countries) {
+      const hit = c.cities.find(x => normKey(x) === k);
+      if (hit) return { name: hit, country: { name: c.name, code: c.code } };
+    }
+    return null;
+  }
+  /** 이 나라의 도시 추천 목록: 가족이 가본 도시 먼저, 그다음 기본 목록 */
+  function citySuggestions(country) {
+    const used = [];
+    DATA.trips.forEach(t => t.countries.forEach(c => { if (c.name === country.name) used.push(...c.cities); }));
+    return [...new Set(used.concat((DATA.cities || {})[country.code] || []))];
+  }
+  const cityLine = cities => cities && cities.length ? `<span class="cities">${cities.map(esc).join(' · ')}</span>` : '';
 
   /* ── 통계 ── */
   function renderStats() {
@@ -242,11 +272,15 @@
         <h2>${esc(p.name)} <small>${esc(p.role)}</small></h2>
         <div class="nums">
           <div><b>${p.departures}</b><span>출국 횟수</span></div>
-          <div><b>${p.countryVisits}</b><span>나라 방문 횟수</span></div>
+          <div><b>${p.countryVisits}</b><span>나라 방문</span></div>
           <div><b>${p.uniqueCountries}</b><span>가본 나라</span></div>
+          <div><b>${p.uniqueCities}</b><span>가본 도시</span></div>
         </div>
-        <div class="flags">${visited.map(n => chip({ name: n + (p.visitCount[n] > 1 ? ' ×' + p.visitCount[n] : ''),
-            code: byName[n] ? byName[n].code : '' })).join('') || '<span class="note">아직 기록이 없어요</span>'}</div>
+        <div class="flags">${visited.map(n => {
+            const cities = Object.keys(p.cityCount).filter(k => k.endsWith('(' + n + ')')).map(k => k.slice(0, -n.length - 2));
+            return `<span>${chip({ name: n + (p.visitCount[n] > 1 ? ' ×' + p.visitCount[n] : ''), code: byName[n] ? byName[n].code : '' })} ${cityLine(cities)}</span>`;
+          }).join('') || '<span class="note">아직 기록이 없어요</span>'}</div>
+        ${p.cityVisits ? `<div class="note">${p.uniqueCountries}개 나라 · ${p.uniqueCities}개 도시 · 도시 방문 ${p.cityVisits}회</div>` : ''}
         ${p.days ? `<div class="note">해외에서 보낸 날 총 ${p.days}일 · 최근 출국 ${dot(p.lastDep)}</div>` : ''}
         ${p.missing ? `<div class="missing">⚠️ 나라 미입력 ${p.missing}건 — 여행 목록에서 채워주세요</div>` : ''}
       </div>`;
@@ -254,7 +288,7 @@
 
     const fam = DATA.family;
     $('countryTable').innerHTML = `<tr><th>나라</th>${fam.map(f => `<th class="c">${esc(f.name)}</th>`).join('')}<th class="c">합계</th></tr>` +
-      (s.countries.map(c => `<tr><td>${chip(c)}</td>${fam.map(f => `<td class="c">${c.byPerson[f.name] || ''}</td>`).join('')}<td class="c"><b>${c.total}</b></td></tr>`).join('')
+      (s.countries.map(c => `<tr><td>${chip(c)}<div>${cityLine(Object.keys(c.cities || {}))}</div></td>${fam.map(f => `<td class="c">${c.byPerson[f.name] || ''}</td>`).join('')}<td class="c"><b>${c.total}</b></td></tr>`).join('')
        || `<tr><td colspan="${fam.length + 2}" class="note">아직 나라가 입력된 여행이 없어요</td></tr>`);
 
     const years = Object.keys(s.years).sort().reverse();
@@ -276,7 +310,8 @@
           <div class="who">${esc(t.person)}</div>
           ${t.memo ? `<div class="memo">${esc(t.memo)}</div>` : ''}
         </div>
-        <div class="flags" style="justify-content:flex-end">${t.countries.map(c => chip(c)).join('') || '<span class="missing">나라 입력하기 ›</span>'}</div>
+        <div>${t.countries.map(c => `<div class="tcountry">${chip(c)}<br>${cityLine(c.cities)}</div>`).join('') || '<span class="missing">나라 입력하기 ›</span>'}
+          ${t.countries.length ? `<div class="tcount">${t.countries.length}개 나라${(n => n ? ' · ' + n + '개 도시' : '')(t.countries.reduce((n, c) => n + c.cities.length, 0))}</div>` : ''}</div>
       </div>`).join('') || '<div class="note">여행 기록이 없어요</div>';
     $('tripList').querySelectorAll('.trip').forEach(el => el.onclick = () => editTrip(el.dataset.id));
   }
@@ -293,28 +328,73 @@
     });
   }
 
+  // pickedCountries: [{ name, code, cities: [..] }] — 나라마다 한 칸, 그 안에 도시 칩과 도시 입력칸
   function renderPicked() {
-    $('picked').innerHTML = pickedCountries.map(c => chip(c, true)).join('');
+    $('picked').innerHTML = pickedCountries.map((c, i) => `
+      <div class="crow">
+        ${chip(c, true)}
+        <div class="flags">
+          ${c.cities.map(city => `<span class="citychip">${esc(city)}<button class="x" data-ci="${i}" data-city="${esc(city)}">×</button></span>`).join('')}
+          <input type="text" data-i="${i}" list="cities-${i}" placeholder="+ 도시 추가">
+          <datalist id="cities-${i}">${citySuggestions(c).filter(x => c.cities.indexOf(x) < 0).map(x => `<option value="${esc(x)}">`).join('')}</datalist>
+        </div>
+      </div>`).join('');
     $('picked').querySelectorAll('[data-remove]').forEach(b => b.onclick = () => {
       pickedCountries = pickedCountries.filter(c => c.name !== b.dataset.remove); renderPicked();
     });
+    $('picked').querySelectorAll('[data-city]').forEach(b => b.onclick = () => {
+      const c = pickedCountries[b.dataset.ci];
+      c.cities = c.cities.filter(x => x !== b.dataset.city); renderPicked();
+    });
+    $('picked').querySelectorAll('input[data-i]').forEach(inp => {
+      const add = () => { if (addCitiesToCountry(Number(inp.dataset.i), inp.value)) { renderPicked(); focusCityInput(inp.dataset.i); } };
+      inp.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); add(); } });
+      // 자동완성 목록에서 고른 경우에만 바로 추가 (포커스가 빠질 때 다시 그리면 저장 버튼 클릭이 씹힘)
+      inp.addEventListener('input', e => { if (pickedFromList(e)) add(); });
+    });
+  }
+  function focusCityInput(i) { const el = $('picked').querySelector(`input[data-i="${i}"]`); if (el) el.focus(); }
+
+  function getPicked(name, code) {
+    let c = pickedCountries.find(x => x.name === name);
+    if (!c) { c = { name: name, code: code || '', cities: [] }; pickedCountries.push(c); }
+    return c;
+  }
+  function addCitiesToCountry(i, text) {
+    const c = pickedCountries[i];
+    const names = String(text).split(/[,，、/]+/).map(s => s.trim()).filter(Boolean);
+    names.forEach(n => {
+      const known = findCity(n);
+      // 다른 나라 도시를 적으면 그 나라 쪽으로 넣어 줌 (예: 일본 칸에 '방콕' → 태국)
+      const target = known && known.country.name !== c.name && !citySuggestions(c).includes(n) ? getPicked(known.country.name, known.country.code) : c;
+      const name = known ? known.name : n;
+      if (target.cities.indexOf(name) < 0) target.cities.push(name);
+    });
+    return names.length > 0;
   }
 
+  /** 위쪽 입력칸: 나라 이름이면 나라 추가, 도시 이름이면 나라 + 도시 추가 */
   function addCountryFromInput() {
     const parts = $('countryInput').value.split(/[,，、/]+/).map(s => s.trim()).filter(Boolean);
+    let lastIndex = -1;
     parts.forEach(p => {
-      const hit = findCountry(p);
-      const c = hit ? { name: hit.name, code: hit.code } : { name: p, code: '' };
-      if (!hit) toast(`'${p}'은(는) 국가목록에 없어요. 그대로 저장돼요`);
-      pickedCountries.push(c);   // 같은 여행에서 같은 나라를 두 번 들르는 경우도 허용
+      const country = findCountry(p);
+      const city = !country && findCity(p);
+      if (country) getPicked(country.name, country.code);
+      else if (city) { const c = getPicked(city.country.name, city.country.code); if (c.cities.indexOf(city.name) < 0) c.cities.push(city.name); }
+      else { toast(`'${p}'은(는) 국가목록에 없어요. 그대로 저장돼요`); getPicked(p, ''); }
+      lastIndex = pickedCountries.findIndex(c => c.name === (country ? country.name : city ? city.country.name : p));
     });
     $('countryInput').value = '';
     renderPicked();
+    if (lastIndex >= 0) focusCityInput(lastIndex);
   }
   $('countryInput').addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); addCountryFromInput(); }
   });
-  $('countryInput').addEventListener('change', () => { if (findCountry($('countryInput').value.trim())) addCountryFromInput(); });
+  $('countryInput').addEventListener('input', e => { if (pickedFromList(e)) addCountryFromInput(); });
+  // datalist에서 항목을 고르면 inputType이 없거나 insertReplacementText로 들어옴
+  function pickedFromList(e) { return !e.inputType || e.inputType === 'insertReplacementText'; }
 
   function resetForm() {
     editingId = null;
@@ -330,7 +410,7 @@
     const t = DATA.trips.find(x => x.id === id); if (!t) return;
     editingId = id;
     pickedPeople = new Set([t.person]);
-    pickedCountries = t.countries.slice();
+    pickedCountries = t.countries.map(c => ({ name: c.name, code: c.code, cities: c.cities.slice() }));
     $('dep').value = t.dep; $('ret').value = t.ret; $('memo').value = t.memo; $('countryInput').value = '';
     $('formTitle').textContent = '여행 수정';
     $('peopleHint').classList.add('hidden');
@@ -344,11 +424,13 @@
 
   $('saveBtn').onclick = async () => {
     if ($('countryInput').value.trim()) addCountryFromInput();
+    // 도시 입력칸에 쓰다 만 글자도 저장
+    $('picked').querySelectorAll('input[data-i]').forEach(inp => { if (inp.value.trim()) addCitiesToCountry(Number(inp.dataset.i), inp.value); });
     const people = [...pickedPeople];
     if (!people.length) return toast('누가 갔는지 선택해 주세요');
     if (!$('dep').value) return toast('출국일을 입력해 주세요');
     const payload = { people, person: people[0], dep: $('dep').value, ret: $('ret').value,
-                      countries: pickedCountries.map(c => c.name), memo: $('memo').value.trim() };
+                      countries: pickedCountries.map(c => ({ name: c.name, cities: c.cities })), memo: $('memo').value.trim() };
     $('saveBtn').disabled = true;
     try {
       const res = editingId ? await api('update', { id: editingId, trip: payload }) : await api('add', { trip: payload });
@@ -616,7 +698,11 @@
   };
 
   function renderAll() {
-    $('countryList').innerHTML = DATA.countries.map(c => `<option value="${esc(c.name)}">`).join('');
+    $('countryList').innerHTML = DATA.countries.map(c => `<option value="${esc(c.name)}">`).join('') +
+      Object.keys(DATA.cities || {}).map(code => {
+        const country = DATA.countries.find(c => c.code === code);
+        return country ? DATA.cities[code].map(city => `<option value="${esc(city)}" label="${esc(country.name)}">`).join('') : '';
+      }).join('');
     renderStats(); renderTrips(); renderPeoplePick(); renderCertPerson();
   }
 
