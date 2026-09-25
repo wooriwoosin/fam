@@ -437,7 +437,7 @@ function getAppData_() {
   return {
     family: FAMILY,
     countries: lookup.list,
-    cities: CITY_DATA,
+    cities: cityData_(),
     trips: trips,
     stats: computeStats_(trips),
   };
@@ -611,15 +611,21 @@ function buildLookup_(ss) {
     add(name, code, aliases);
   });
   const cityByKey = {};
-  Object.keys(CITY_DATA).forEach(code => {
+  const cityData = cityData_();
+  Object.keys(cityData).forEach(code => {
     const country = byCode[code];
     if (!country) return;
-    CITY_DATA[code].forEach(city => {
+    cityData[code].forEach(city => {
       const k = normKey_(city);
       if (!cityByKey[k]) cityByKey[k] = { name: city, country: country.name, code: country.code };
     });
   });
   return { countryByKey: countryByKey, aliasByKey: aliasByKey, cityByKey: cityByKey, list: list };
+}
+
+/** Countries.gs의 도시 목록. 예전 Countries.gs라서 없으면 빈 목록으로 동작 (도시 자동완성만 빠짐) */
+function cityData_() {
+  return typeof CITY_DATA === 'undefined' ? {} : CITY_DATA;
 }
 
 /** 나라 이름 하나 찾기: 이름·코드 → 별칭 순서 */
