@@ -484,8 +484,22 @@ function writeByCountrySheet_(ss, stats) {
  * 쓰기 요청의 응답에는 국가·도시 목록을 빼고 trips/stats만 담아서 가볍게 보냅니다.
  */
 function doPost(e) {
+  return handle_((e && e.postData && e.postData.contents) || '{}');
+}
+
+/**
+ * GET으로도 같은 요청을 받음: …/exec?p=<JSON>
+ * 일부 브라우저·네트워크에서 POST 요청의 리디렉션이 404가 나는 경우가 있어서, 화면이 자동으로 GET으로 바꿔 보냄.
+ * p가 없으면(주소를 그냥 열면) 동작 확인 메시지.
+ */
+function doGet(e) {
+  if (e && e.parameter && e.parameter.p) return handle_(e.parameter.p);
+  return json_({ ok: true, message: '가족 여행기록 API가 동작 중입니다. 화면은 GitHub Pages 주소로 여세요.' });
+}
+
+function handle_(raw) {
   try {
-    const req = JSON.parse((e && e.postData && e.postData.contents) || '{}');
+    const req = JSON.parse(raw);
     checkKey_(req.key);
     switch (req.action) {
       case 'get': {
@@ -503,11 +517,6 @@ function doPost(e) {
   } catch (err) {
     return json_({ ok: false, error: err.message, auth: err.name === 'AuthError' });
   }
-}
-
-/** 주소를 브라우저로 열었을 때 동작 확인용 */
-function doGet() {
-  return json_({ ok: true, message: '가족 여행기록 API가 동작 중입니다. 화면은 GitHub Pages 주소로 여세요.' });
 }
 
 function json_(obj) {

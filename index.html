@@ -242,6 +242,23 @@
   })();
 
   let lastTiming = null;
+  const TRANSPORT_STORAGE = 'famTravelTransport';
+
+  /** 웹앱으로 한 번 보내기. credentials: 'omit' → 여러 구글 계정 로그인 쿠키가 끼어들지 않게 */
+  async function send(transport, payload, timeoutMs) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const url = getApiUrl();
+      const res = transport === 'get'
+        ? await fetch(url + (url.includes('?') ? '&' : '?') + 'p=' + encodeURIComponent(payload), { credentials: 'omit', signal: ctrl.signal })
+        : await fetch(url, { method: 'POST', body: payload, credentials: 'omit', signal: ctrl.signal });
+      return { res, text: await res.text() };
+    } catch (e) {
+      if (e.name === 'AbortError') throw new ApiError(`서버가 ${timeoutMs / 1000}초 안에 응답하지 않았어요. 잠시 뒤 다시 시도해 주세요.`, 'timeout');
+      throw new ApiError('웹앱에 연결하지 못했어요. 인터넷 연결을 확인하고, 배포의 액세스 권한이 "모든 사용자"인지 확인해 주세요.', 'network');
+    } finally { clearTimeout(timer); }
+  }
 
   class ApiError extends Error {
     constructor(message, kind) { super(message); this.kind = kind; }
@@ -266,17 +283,25 @@
       if (!key) throw new ApiError('비밀번호가 필요해요', 'auth');
     }
     const started = performance.now();
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    let res, text;
-    try {
-      res = await fetch(getApiUrl(), { method: 'POST', body: JSON.stringify(Object.assign({ action, key }, extra)), signal: ctrl.signal });
-      text = await res.text();
-    } catch (e) {
-      if (e.name === 'AbortError') throw new ApiError(`서버가 ${timeoutMs / 1000}초 안에 응답하지 않았어요. 잠시 뒤 다시 시도해 주세요.`, 'timeout');
-      throw new ApiError('웹앱에 연결하지 못했어요. 인터넷 연결을 확인하고, 배포의 액세스 권한이 "모든 사용자"인지 확인해 주세요.', 'network');
-    } finally { clearTimeout(timer); }
-    if (res.status === 404) throw new ApiError('웹앱을 열 수 없어요 (404). ① 배포 관리에서 액세스 권한이 "모든 사용자"인지 (「Google 계정이 있는 모든 사용자」·「나만」이면 안 돼요) ② 웹앱 주소가 바뀌지 않았는지 확인해 주세요. 시크릿 창에서 웹앱 주소를 열었을 때 {"ok":true…}가 보이면 정상이에요.', 'notfound');
+    const payload = JSON.stringify(Object.assign({ action, key }, extra));
+    // 기본은 POST. POST가 404면 같은 요청을 GET(?p=…)으로 보내 보고, 되면 이 기기에서는 계속 GET 사용
+    let transport = store.get(TRANSPORT_STORAGE) === 'get' ? 'get' : 'post';
+    let { res, text } = await send(transport, payload, timeoutMs);
+    if (res.status === 404 && transport === 'post') {
+      const retry = await send('get', payload, timeoutMs);
+      if (retry.res.status !== 404) {
+        store.set(TRANSPORT_STORAGE, 'get');
+        console.info('[여행기록] POST가 404라서 GET 방식으로 전환');
+        ({ res, text } = retry);
+        transport = 'get';
+      }
+    }
+    if (res.status === 404) {
+      const where = (() => { try { return new URL(res.url).host; } catch (e) { return '?'; } })();
+      const custom = store.get(API_STORAGE) ? ' · ⚙️ 설정에 직접 넣은 주소 사용 중' : '';
+      throw new ApiError(`웹앱을 열 수 없어요 (404, ${where}${custom}). ① 배포 관리에서 액세스 권한이 "모든 사용자"인지 ② 웹앱 주소가 바뀌지 않았는지 확인해 주세요. ` +
+        `사용 중인 주소 끝자리: …${getApiUrl().slice(-14)}`, 'notfound');
+    }
     if (!res.ok) throw new ApiError('서버 응답 오류 (' + res.status + ')', 'http');
     let body;
     try { body = JSON.parse(text); } catch (e) {
@@ -866,7 +891,12 @@
     if (!rows.length) return toast('저장할 날짜가 없어요');
     $('certSave').disabled = true;
     try {
-      const res = await api('import', { person: certPerson, trips: rows });
+      // 주소 길이 제한(GET 방식) 대비 20건씩 나눠 보냄
+      let res = { added: 0, skipped: 0 };
+      for (let i = 0; i < rows.length; i += 20) {
+        const part = await api('import', { person: certPerson, trips: rows.slice(i, i + 20) });
+        res = Object.assign(part, { added: res.added + part.added, skipped: res.skipped + part.skipped });
+      }
       mergeData(res.data); renderAll(); saveLocal();
       toast(`${res.added}건 저장했어요` + (res.skipped ? ` (이미 있던 ${res.skipped}건은 건너뜀)` : '') + '. 이제 나라를 채워 주세요!');
       filterPerson = certPerson; certRows = [];
@@ -899,6 +929,7 @@
     const u = $('setApi').value.trim();
     if (!isValidApiUrl(u)) return toast('https://script.google.com/macros/s/…/exec 형태의 주소를 넣어 주세요');
     store.set(API_STORAGE, u === DEFAULT_API_URL ? '' : u);
+    store.set(TRANSPORT_STORAGE, '');
     closeSettings(); loadFresh();
   };
 
