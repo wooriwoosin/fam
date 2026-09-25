@@ -42,8 +42,11 @@ const DATE_FORMAT = 'yyyy.mm.dd';
 const MISSING_COLOR = '#fff4c2';
 const UNKNOWN_COLOR = '#ffd6d6';
 const COUNTRY_CACHE_KEY = 'countryRows_v1';
-// 'get' 응답 전체를 캐시 (저장할 때마다 새로 채움, 시트를 직접 고치면 지움)
+// 'get' 응답 전체를 캐시 (저장할 때마다 새로 채움)
+//  1순위 CacheService (가장 빠름, 최대 6시간이면 사라짐)
+//  2순위 스크립트 속성 스냅샷 (사라지지 않음 → 밤새 캐시가 비어도 아침 첫 불러오기에서 시트를 안 엶)
 const APP_CACHE_KEY = 'appData_v1';
+const SNAPSHOT_KEY = 'snap';
 const CACHE_SECONDS = 6 * 60 * 60;
 
 // 통계 시트 고정 배치 (가족 수가 정해져 있어서 위치가 바뀌지 않음 → 서식은 한 번만)
@@ -54,7 +57,7 @@ const STATS_YEAR_ROW = STATS_TABLE_ROW + FAMILY.length + 2;
 
 /* ───────────────────────── 설치 ───────────────────────── */
 
-/** 처음 한 번 실행: 시트 만들기 + 국가목록 채우기 + 자동 국기 트리거 + 통계 서식 */
+/** 처음 한 번 실행: 시트 만들기 + 국가목록 채우기 + 자동 국기·새벽 새로고침 트리거 + 통계 서식 */
 function setup() {
   const ss = getSpreadsheet_();
   setupTripSheet_(ss);
@@ -157,8 +160,10 @@ function ensureTripColumns_(ss) {
 }
 
 function installEditTrigger_(ss) {
-  const exists = ScriptApp.getProjectTriggers().some(t => t.getHandlerFunction() === 'handleEdit');
-  if (!exists) ScriptApp.newTrigger('handleEdit').forSpreadsheet(ss).onEdit().create();
+  const handlers = ScriptApp.getProjectTriggers().map(t => t.getHandlerFunction());
+  if (handlers.indexOf('handleEdit') < 0) ScriptApp.newTrigger('handleEdit').forSpreadsheet(ss).onEdit().create();
+  // 매일 새벽 5시쯤 스냅샷 새로 고침 (서울 시간 기준, appsscript.json 시간대)
+  if (handlers.indexOf('refreshSnapshot') < 0) ScriptApp.newTrigger('refreshSnapshot').timeBased().everyDays(1).atHour(5).create();
 }
 
 /* ───────────────────────── 여행기록 저장소 (한 번 읽고 한 번 쓰기) ───────────────────────── */
@@ -271,7 +276,6 @@ function handleEdit(e) {
   const sheet = e.range.getSheet();
   const name = sheet.getName();
   const ss = sheet.getParent();
-  if (name === SHEET.COUNTRIES || name === SHEET.TRIPS) clearAppCache_();
   if (name === SHEET.COUNTRIES) {
     CacheService.getScriptCache().remove(COUNTRY_CACHE_KEY);
     lookupCache_ = null;
@@ -290,7 +294,8 @@ function handleEdit(e) {
     marks.setBackgrounds(done.map(d => d ? d.backgrounds : [null, null]));
     marks.setNotes(done.map(d => d ? d.notes : ['', '']));
     const store = loadStore_(ss);
-    rebuildStats_(ss, tripsFromRows_(store.rows, lookup));
+    const trips = tripsFromRows_(store.rows, lookup);
+    cacheAppData_(lookup, trips, rebuildStats_(ss, trips));
   }
 }
 
@@ -300,8 +305,16 @@ function refreshAll() {
   const lookup = buildLookup_(ss);
   const store = loadStore_(ss);
   saveStore_(store, lookup);
-  rebuildStats_(ss, tripsFromRows_(store.rows, lookup));
-  clearAppCache_();
+  const trips = tripsFromRows_(store.rows, lookup);
+  cacheAppData_(lookup, trips, rebuildStats_(ss, trips));
+}
+
+/** 매일 새벽 트리거: 시트에서 다시 읽어 스냅샷을 최신으로 (시트를 직접 고친 게 빠졌어도 하루 안에 맞춰짐) */
+function refreshSnapshot() {
+  const ss = getSpreadsheet_();
+  const lookup = buildLookup_(ss);
+  const trips = tripsFromRows_(loadStore_(ss).rows, lookup);
+  cacheAppData_(lookup, trips, computeStats_(trips));
 }
 
 /** 메뉴: 메모에 적어 둔 도시 이름을 '방문도시' 칸으로 옮김 (목록에 있는 도시만, 나머지 메모는 그대로) */
@@ -318,8 +331,8 @@ function moveMemoCities() {
     moved += found.length;
   });
   saveStore_(store, lookup);
-  rebuildStats_(ss, tripsFromRows_(store.rows, lookup));
-  clearAppCache_();
+  const trips = tripsFromRows_(store.rows, lookup);
+  cacheAppData_(lookup, trips, rebuildStats_(ss, trips));
   const msg = '메모에서 도시 ' + moved + '개를 방문도시로 옮겼어요.';
   try { SpreadsheetApp.getUi().alert(msg); } catch (e) { Logger.log(msg); }
 }
@@ -552,6 +565,9 @@ function getAppDataJson_(timing) {
   const hit = cacheGet_(APP_CACHE_KEY);
   timing.step('cache');
   if (hit) { timing.note('cached', true); return hit; }
+  const snap = snapshotGet_();
+  timing.step('snapshot');
+  if (snap) { timing.note('cached', 'snapshot'); cachePut_(APP_CACHE_KEY, snap); return snap; }
   const ss = getSpreadsheet_();
   timing.step('open');
   const lookup = buildLookup_(ss);
@@ -610,12 +626,43 @@ function checkSpeed() {
 function cacheAppData_(lookup, trips, stats) {
   const text = JSON.stringify({ family: FAMILY, countries: lookup.list, cities: cityData_(), trips: trips, stats: stats });
   cachePut_(APP_CACHE_KEY, text);
+  snapshotSave_(text);
   return text;
 }
 
-/** 시트를 직접 고쳤을 때 등: 다음 'get'이 시트에서 새로 읽도록 */
+/** CacheService만 비움 (스냅샷은 유지) — checkSpeed에서 시트 읽기 시간을 재려고 */
 function clearAppCache_() {
   cacheRemove_(APP_CACHE_KEY);
+}
+
+/* 스크립트 속성은 값 하나가 9KB까지라서 2500자(한글 3바이트 기준 ~7.5KB)씩 나눠 저장. 전체 한도 500KB */
+const SNAPSHOT_CHUNK = 2500;
+function snapshotSave_(text) {
+  const props = PropertiesService.getScriptProperties();
+  const n = Math.ceil(text.length / SNAPSHOT_CHUNK) || 1;
+  const parts = {};
+  for (let i = 0; i < n; i++) parts[SNAPSHOT_KEY + '_' + i] = text.slice(i * SNAPSHOT_CHUNK, (i + 1) * SNAPSHOT_CHUNK);
+  parts[SNAPSHOT_KEY + '_n'] = String(n);
+  try {
+    const old = Number(props.getProperty(SNAPSHOT_KEY + '_n')) || 0;
+    props.setProperties(parts);   // 다른 속성(FAMILY_KEY 등)은 그대로 둠
+    for (let i = n; i < old; i++) props.deleteProperty(SNAPSHOT_KEY + '_' + i);
+  } catch (e) {
+    // 너무 커서 못 넣으면 스냅샷 없이 동작 (캐시·시트로)
+    try { props.deleteProperty(SNAPSHOT_KEY + '_n'); } catch (_) {}
+  }
+}
+function snapshotGet_() {
+  const all = PropertiesService.getScriptProperties().getProperties();
+  const n = Number(all[SNAPSHOT_KEY + '_n']);
+  if (!n) return null;
+  const parts = [];
+  for (let i = 0; i < n; i++) {
+    const part = all[SNAPSHOT_KEY + '_' + i];
+    if (part == null) return null;
+    parts.push(part);
+  }
+  return parts.join('');
 }
 
 /** 쓰기 공통: 잠금 → 한 번 읽기 → change(store) → 한 번 쓰기 → 통계 시트 → 가벼운 응답 */
