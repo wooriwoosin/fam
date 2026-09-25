@@ -276,7 +276,7 @@
       if (e.name === 'AbortError') throw new ApiError(`서버가 ${timeoutMs / 1000}초 안에 응답하지 않았어요. 잠시 뒤 다시 시도해 주세요.`, 'timeout');
       throw new ApiError('웹앱에 연결하지 못했어요. 인터넷 연결을 확인하고, 배포의 액세스 권한이 "모든 사용자"인지 확인해 주세요.', 'network');
     } finally { clearTimeout(timer); }
-    if (res.status === 404) throw new ApiError('웹앱 주소를 찾을 수 없어요 (404). 배포 주소가 바뀌었거나 배포가 보관처리된 것 같아요.', 'notfound');
+    if (res.status === 404) throw new ApiError('웹앱을 열 수 없어요 (404). ① 배포 관리에서 액세스 권한이 "모든 사용자"인지 (「Google 계정이 있는 모든 사용자」·「나만」이면 안 돼요) ② 웹앱 주소가 바뀌지 않았는지 확인해 주세요. 시크릿 창에서 웹앱 주소를 열었을 때 {"ok":true…}가 보이면 정상이에요.', 'notfound');
     if (!res.ok) throw new ApiError('서버 응답 오류 (' + res.status + ')', 'http');
     let body;
     try { body = JSON.parse(text); } catch (e) {
