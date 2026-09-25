@@ -20,10 +20,30 @@
                border-bottom: 3px solid transparent; cursor: pointer; }
   nav button.on { color: #fff; border-bottom-color: #fff; font-weight: 700; }
   main { max-width: 860px; margin: 0 auto; padding: 16px; }
+  /* 통계 탭은 넓은 화면에서 가족 4명을 한 줄에 보여 주려고 더 넓게 씀 */
+  main.wide { max-width: 1280px; }
+  .tables { display: grid; grid-template-columns: 3fr 2fr; gap: 12px; align-items: start; }
+  .tables .card { margin-bottom: 0; }
+  @media (max-width: 1099px) { .tables { grid-template-columns: 1fr; } }
   .hidden { display: none !important; }
   .card { background: var(--card); border-radius: 14px; padding: 16px; margin-bottom: 12px;
           box-shadow: 0 1px 3px rgba(0,0,0,.06); }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
+  /* 가족 카드: PC 4칸 한 줄 · 태블릿/폴드 2×2 · 휴대폰도 2×2(작은 카드) */
+  .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
+  .grid .card { margin-bottom: 0; }
+  @media (max-width: 1099px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 599px) {
+    .grid { gap: 8px; }
+    .grid .card { padding: 12px 10px; border-radius: 12px; }
+    .person h2 { font-size: 15px; margin-bottom: 8px; }
+    .person h2 small { display: block; font-size: 12px; }
+    .grid .nums { grid-template-columns: repeat(2, 1fr); row-gap: 8px; }
+    .grid .nums b { font-size: 20px; }
+    .grid .nums span { font-size: 11px; }
+    .grid .flags { gap: 4px; }
+    .grid .chip { font-size: 12px; padding: 2px 7px 2px 4px; }
+    .grid .cities, .grid .note.detail, .grid .hint { display: none; }   /* 도시 목록은 아래 '나라별' 표에서 */
+  }
   .person h2 { margin: 0 0 10px; font-size: 17px; }
   .person h2 small { color: var(--muted); font-weight: 400; font-size: 13px; }
   .nums { display: grid; grid-template-columns: repeat(4, 1fr); text-align: center; gap: 6px; margin-bottom: 10px; }
@@ -127,13 +147,15 @@
   <!-- 통계 -->
   <section id="tab-stats" class="hidden">
     <div id="people" class="grid"></div>
-    <div class="card">
-      <h3 style="margin-top:0">🌏 나라별 방문 횟수</h3>
-      <div style="overflow-x:auto"><table id="countryTable"></table></div>
-    </div>
-    <div class="card">
-      <h3 style="margin-top:0">📅 연도별 출국 횟수</h3>
-      <div style="overflow-x:auto"><table id="yearTable"></table></div>
+    <div class="tables">
+      <div class="card">
+        <h3 style="margin-top:0">🌏 나라별 방문 횟수</h3>
+        <div style="overflow-x:auto"><table id="countryTable"></table></div>
+      </div>
+      <div class="card">
+        <h3 style="margin-top:0">📅 연도별 출국 횟수</h3>
+        <div style="overflow-x:auto"><table id="yearTable"></table></div>
+      </div>
     </div>
   </section>
 
@@ -338,6 +360,7 @@
   function showTab(name) {
     document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
     ['stats', 'trips', 'form', 'cert'].forEach(t => $('tab-' + t).classList.toggle('hidden', t !== name));
+    document.querySelector('main').classList.toggle('wide', name === 'stats');
     window.scrollTo(0, 0);
   }
   document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
@@ -391,9 +414,9 @@
             const cities = Object.keys(p.cityCount).filter(k => k.endsWith('(' + n + ')')).map(k => k.slice(0, -n.length - 2));
             return `<span>${chip({ name: n + (p.visitCount[n] > 1 ? ' ×' + p.visitCount[n] : ''), code: byName[n] ? byName[n].code : '' })} ${cityLine(cities)}</span>`;
           }).join('') || '<span class="note">아직 기록이 없어요</span>'}</div>
-        ${p.cityVisits ? `<div class="note">${p.uniqueCountries}개 나라 · ${p.uniqueCities}개 도시 · 도시 방문 ${p.cityVisits}회</div>` : ''}
-        ${p.days ? `<div class="note">해외에서 보낸 날 총 ${p.days}일 · 최근 출국 ${dot(p.lastDep)}</div>` : ''}
-        ${p.missing ? `<div class="missing">⚠️ 나라 미입력 ${p.missing}건 — 여행 목록에서 채워주세요</div>` : ''}
+        ${p.cityVisits ? `<div class="note detail">${p.uniqueCountries}개 나라 · ${p.uniqueCities}개 도시 · 도시 방문 ${p.cityVisits}회</div>` : ''}
+        ${p.days ? `<div class="note detail">해외에서 보낸 날 총 ${p.days}일 · 최근 출국 ${dot(p.lastDep)}</div>` : ''}
+        ${p.missing ? `<div class="missing">⚠️ 나라 미입력 ${p.missing}건<span class="hint"> — 여행 목록에서 채워주세요</span></div>` : ''}
       </div>`;
     }).join('');
 
