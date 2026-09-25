@@ -479,7 +479,7 @@ function writeByCountrySheet_(ss, stats) {
 /**
  * 화면(HTML)은 GitHub Pages에 있고, 이 스크립트는 시트 저장/조회만 하는 API입니다.
  * 모든 요청은 POST, 본문은 JSON 문자열: { action, key, ... }
- *   action: 'get' | 'add' | 'update' | 'delete' | 'import'
+ *   action: 'get' | 'add' | 'update' | 'delete' | 'import' | 'ping'
  * key: 가족 비밀번호 (스크립트 속성 FAMILY_KEY). 웹앱을 '모든 사용자'로 공개하므로 이걸로 막습니다.
  * 쓰기 요청의 응답에는 국가·도시 목록을 빼고 trips/stats만 담아서 가볍게 보냅니다.
  */
@@ -488,7 +488,12 @@ function doPost(e) {
     const req = JSON.parse((e && e.postData && e.postData.contents) || '{}');
     checkKey_(req.key);
     switch (req.action) {
-      case 'get': return jsonText_('{"ok":true,"data":' + getAppDataJson_() + '}');
+      case 'get': {
+        const timing = startTiming_();
+        const data = getAppDataJson_(timing);
+        return jsonText_('{"ok":true,"timing":' + JSON.stringify(timing.done()) + ',"data":' + data + '}');
+      }
+      case 'ping': return json_({ ok: true, now: Date.now() });   // 구글 서버 깨우기/연결 확인용 (시트 안 읽음)
       case 'add': return json_(Object.assign({ ok: true }, addTrip_(req.trip || {})));
       case 'update': return json_(Object.assign({ ok: true }, updateTrip_(req.id, req.trip || {})));
       case 'delete': return json_(Object.assign({ ok: true }, deleteTrip_(req.id)));
@@ -533,13 +538,64 @@ function setFamilyKey() {
 }
 
 /** 처음 불러올 때: 가족, 국가·도시 목록, 여행, 통계. 캐시에 있으면 시트를 아예 안 읽음 */
-function getAppDataJson_() {
+function getAppDataJson_(timing) {
+  timing = timing || startTiming_();
   const hit = cacheGet_(APP_CACHE_KEY);
-  if (hit) return hit;
+  timing.step('cache');
+  if (hit) { timing.note('cached', true); return hit; }
   const ss = getSpreadsheet_();
+  timing.step('open');
   const lookup = buildLookup_(ss);
-  const trips = tripsFromRows_(loadStore_(ss).rows, lookup);
-  return cacheAppData_(lookup, trips, computeStats_(trips));
+  timing.step('countries');
+  const store = loadStore_(ss);
+  timing.step('readTrips');
+  timing.note('rows', store.rows.length);
+  const trips = tripsFromRows_(store.rows, lookup);
+  const stats = computeStats_(trips);
+  timing.step('compute');
+  const text = cacheAppData_(lookup, trips, stats);
+  timing.step('cachePut');
+  return text;
+}
+
+/** 단계별 걸린 시간(ms) 기록: 화면 콘솔과 ⚙️ 설정에서 볼 수 있음 */
+function startTiming_() {
+  const t0 = Date.now();
+  let last = t0;
+  const out = {};
+  return {
+    step: name => { const now = Date.now(); out[name] = now - last; last = now; },
+    note: (k, v) => { out[k] = v; },
+    done: () => { out.total = Date.now() - t0; return out; },
+  };
+}
+
+/**
+ * 편집기에서 실행: 어느 단계가 느린지 '실행 로그'에 찍어 줌.
+ * 캐시를 비우고 처음 불러오기와 같은 순서로 재고, 시트 크기도 함께 보여 줌.
+ */
+function checkSpeed() {
+  clearAppCache_();
+  CacheService.getScriptCache().remove(COUNTRY_CACHE_KEY);
+  const t = startTiming_();
+  const ss = getSpreadsheet_();
+  t.step('시트 열기');
+  ss.getSheets().forEach(sh => {
+    Logger.log('%s: 마지막 줄 %s / 전체 %s줄 × %s칸', sh.getName(), sh.getLastRow(), sh.getMaxRows(), sh.getMaxColumns());
+  });
+  t.step('시트 크기 확인');
+  const lookup = buildLookup_(ss);
+  t.step('국가목록 읽기');
+  const store = loadStore_(ss);
+  t.step('여행기록 읽기 (' + store.rows.length + '줄)');
+  const trips = tripsFromRows_(store.rows, lookup);
+  const stats = computeStats_(trips);
+  t.step('계산');
+  const text = cacheAppData_(lookup, trips, stats);
+  t.step('캐시 저장 (' + Math.round(text.length / 1024) + 'KB)');
+  const again = cacheGet_(APP_CACHE_KEY);
+  t.step('캐시에서 다시 읽기 (' + (again ? '성공' : '실패') + ')');
+  Logger.log(JSON.stringify(t.done(), null, 1));
 }
 
 function cacheAppData_(lookup, trips, stats) {
