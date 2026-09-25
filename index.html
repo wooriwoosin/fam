@@ -1,8 +1,10 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-<base target="_top">
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>우리 가족 여행기록</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>✈️</text></svg>">
 <style>
   :root {
     --bg: #f5f7fb; --card: #fff; --text: #1d2433; --muted: #6b7489; --line: #e3e7ef;
@@ -143,9 +145,29 @@
     setTimeout(() => t.classList.remove('show'), 2200);
   }
 
-  function call(fn, ...args) {
-    return new Promise((resolve, reject) =>
-      google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)[fn](...args));
+  // Apps Script 웹앱 주소 (배포 → 배포 관리에서 복사). 시트 저장/조회만 담당합니다.
+  const API_URL = 'https://script.google.com/macros/s/AKfycbxisKGyYyoV11Pw70RZEYfyTl99QTAY9NYjUJvT5sZNSQdoPpofTFJO8IEFD7cfIM_S/exec';
+  const KEY_STORAGE = 'famTravelKey';
+
+  function getKey() { try { return localStorage.getItem(KEY_STORAGE) || ''; } catch (e) { return ''; } }
+  function setKey(k) { try { k ? localStorage.setItem(KEY_STORAGE, k) : localStorage.removeItem(KEY_STORAGE); } catch (e) {} }
+
+  // Content-Type을 지정하지 않으면 text/plain으로 보내져서 CORS 사전요청 없이 Apps Script에 전달됩니다.
+  async function api(action, extra) {
+    let key = getKey();
+    if (!key) {
+      key = (prompt('가족 비밀번호를 입력해 주세요') || '').trim();
+      if (!key) throw new Error('비밀번호가 필요해요');
+    }
+    const res = await fetch(API_URL, { method: 'POST', body: JSON.stringify(Object.assign({ action, key }, extra)) });
+    if (!res.ok) throw new Error('서버 응답 오류 (' + res.status + ')');
+    const body = await res.json();
+    if (!body.ok) {
+      if (body.auth) { setKey(''); return api(action, extra); }
+      throw new Error(body.error);
+    }
+    setKey(key);
+    return body;
   }
 
   function showTab(name) {
@@ -283,7 +305,7 @@
                       countries: pickedCountries.map(c => c.name), memo: $('memo').value.trim() };
     $('saveBtn').disabled = true;
     try {
-      const res = editingId ? await call('updateTrip', editingId, payload) : await call('addTrip', payload);
+      const res = editingId ? await api('update', { id: editingId, trip: payload }) : await api('add', { trip: payload });
       DATA = res.data; renderAll();
       if (res.skipped && res.skipped.length) toast(`${res.skipped.join(', ')}: 같은 출국일 기록이 이미 있어서 건너뛰었어요`);
       else toast('저장했어요 ✈️');
@@ -295,7 +317,7 @@
 
   $('deleteBtn').onclick = async () => {
     if (!editingId || !confirm('이 여행 기록을 삭제할까요?')) return;
-    try { DATA = (await call('deleteTrip', editingId)).data; renderAll(); toast('삭제했어요'); showTab('trips'); resetForm(); }
+    try { DATA = (await api('delete', { id: editingId })).data; renderAll(); toast('삭제했어요'); showTab('trips'); resetForm(); }
     catch (e) { toast('오류: ' + e.message); }
   };
 
@@ -304,9 +326,9 @@
     renderStats(); renderTrips(); renderPeoplePick();
   }
 
-  call('getAppData').then(d => {
-    DATA = d; $('loading').classList.add('hidden'); renderAll(); resetForm(); showTab('stats');
-  }).catch(e => { $('loading').textContent = '불러오기 실패: ' + e.message + ' — 편집기에서 setup을 먼저 실행했는지 확인해 주세요'; });
+  api('get').then(res => {
+    DATA = res.data; $('loading').classList.add('hidden'); renderAll(); resetForm(); showTab('stats');
+  }).catch(e => { $('loading').textContent = '불러오기 실패: ' + e.message + ' — 새로고침 해 주세요'; });
 </script>
 </body>
 </html>

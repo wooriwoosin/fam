@@ -7,7 +7,8 @@
  *  - 나라별   : 나라마다 누가 몇 번 갔는지 (국기 이미지 포함)
  *  - 국가목록 : 나라 이름 ↔ 국기 매칭표 (없는 나라는 여기에 한 줄 추가)
  *
- * 처음 한 번만 편집기에서 setup 함수를 실행하세요.
+ * 화면(index.html)은 GitHub Pages에 두고, 이 스크립트는 시트 저장/조회 API 역할만 합니다.
+ * 처음 한 번만 편집기에서 setFamilyKey → setup 순서로 실행하세요.
  */
 
 const SPREADSHEET_ID = '14vG4qi62Nkl0ytk8ozNpuD75Puf9XDKjoLsFQ5E7tHA';
@@ -308,17 +309,59 @@ function writeByCountrySheet_(ss, stats) {
   sheet.setColumnWidth(2, 40);
 }
 
-/* ───────────────────────── 웹앱 ───────────────────────── */
+/* ───────────────────────── API (GitHub의 index.html이 호출) ───────────────────────── */
 
-function doGet() {
-  return HtmlService.createHtmlOutputFromFile('Index')
-    .setTitle('우리 가족 여행기록')
-    .addMetaTag('viewport', 'width=device-width, initial-scale=1')
-    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+/**
+ * 화면(HTML)은 GitHub Pages에 있고, 이 스크립트는 시트 저장/조회만 하는 API입니다.
+ * 모든 요청은 POST, 본문은 JSON 문자열: { action, key, ... }
+ *   action: 'get' | 'add' | 'update' | 'delete'
+ * key: 가족 비밀번호 (스크립트 속성 FAMILY_KEY). 웹앱을 '모든 사용자'로 공개하므로 이걸로 막습니다.
+ */
+function doPost(e) {
+  try {
+    const req = JSON.parse((e && e.postData && e.postData.contents) || '{}');
+    checkKey_(req.key);
+    switch (req.action) {
+      case 'get': return json_({ ok: true, data: getAppData_() });
+      case 'add': return json_(Object.assign({ ok: true }, addTrip_(req.trip || {})));
+      case 'update': return json_(Object.assign({ ok: true }, updateTrip_(req.id, req.trip || {})));
+      case 'delete': return json_(Object.assign({ ok: true }, deleteTrip_(req.id)));
+      default: throw new Error('알 수 없는 요청: ' + req.action);
+    }
+  } catch (err) {
+    return json_({ ok: false, error: err.message, auth: err.name === 'AuthError' });
+  }
 }
 
-/** 웹앱이 처음 불러오는 데이터 */
-function getAppData() {
+/** 주소를 브라우저로 열었을 때 동작 확인용 */
+function doGet() {
+  return json_({ ok: true, message: '가족 여행기록 API가 동작 중입니다. 화면은 GitHub Pages 주소로 여세요.' });
+}
+
+function json_(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}
+
+/** 가족 비밀번호 확인 */
+function checkKey_(key) {
+  const saved = PropertiesService.getScriptProperties().getProperty('FAMILY_KEY');
+  if (!saved) throw new Error('편집기에서 setFamilyKey를 먼저 실행해 주세요');
+  if (String(key || '') !== saved) {
+    const err = new Error('비밀번호가 틀렸어요');
+    err.name = 'AuthError';
+    throw err;
+  }
+}
+
+/** 가족 비밀번호 설정: 아래 값을 바꿔서 편집기에서 실행 (값을 바꾼 뒤 GitHub에는 올리지 마세요) */
+function setFamilyKey() {
+  const key = '여기에-가족-비밀번호';
+  if (key === '여기에-가족-비밀번호') throw new Error('key 값을 원하는 비밀번호로 바꾼 뒤 실행하세요');
+  PropertiesService.getScriptProperties().setProperty('FAMILY_KEY', key);
+  Logger.log('가족 비밀번호를 저장했습니다. 이제 key 값을 원래대로 되돌려도 됩니다.');
+}
+
+function getAppData_() {
   const ss = getSpreadsheet_();
   const trips = readTrips_(ss);
   const lookup = buildLookup_(ss);
@@ -330,56 +373,58 @@ function getAppData() {
   };
 }
 
-/** payload: { people: [..], dep: 'yyyy-mm-dd', ret: 'yyyy-mm-dd', countries: [..], memo } */
-function addTrip(payload) {
+/** trip: { people: [..], dep: 'yyyy-mm-dd', ret: 'yyyy-mm-dd', countries: [..], memo } */
+function addTrip_(trip) {
   return withLock_(() => {
     const ss = getSpreadsheet_();
     const sheet = ss.getSheetByName(SHEET.TRIPS);
-    const people = (payload.people || []).filter(p => FAMILY.some(f => f.name === p));
+    const people = (trip.people || []).filter(p => FAMILY.some(f => f.name === p));
     if (!people.length) throw new Error('여행자를 선택해 주세요');
-    if (!parseDate_(payload.dep)) throw new Error('출국일을 입력해 주세요');
+    if (!parseDate_(trip.dep)) throw new Error('출국일을 입력해 주세요');
     const existing = new Set(readTrips_(ss).map(t => t.person + '|' + t.dep));
     const skipped = [];
     const lookup = buildLookup_(ss);
     people.forEach(person => {
-      if (existing.has(person + '|' + payload.dep)) { skipped.push(person); return; }
+      if (existing.has(person + '|' + trip.dep)) { skipped.push(person); return; }
       const row = sheet.getLastRow() + 1;
       sheet.getRange(row, 1, 1, TRIP_HEADERS.length).setValues([[
-        newId_(), person, parseDate_(payload.dep), parseDate_(payload.ret) || '',
-        '', (payload.countries || []).join(', '), '', '', payload.memo || '',
+        newId_(), person, parseDate_(trip.dep), parseDate_(trip.ret) || '',
+        '', (trip.countries || []).join(', '), '', '', trip.memo || '',
       ]]);
       refreshTripRow_(sheet, row, lookup);
     });
     sortTrips_(sheet);
     rebuildStats_(ss);
-    return { data: getAppData(), skipped: skipped };
+    return { data: getAppData_(), skipped: skipped };
   });
 }
 
-/** 기존 여행 수정 (나라 채우기 등) */
-function updateTrip(id, payload) {
+/** 기존 여행 수정 (나라 채우기 등). trip: { person, dep, ret, countries, memo } */
+function updateTrip_(id, trip) {
   return withLock_(() => {
     const ss = getSpreadsheet_();
     const sheet = ss.getSheetByName(SHEET.TRIPS);
+    if (!FAMILY.some(f => f.name === trip.person)) throw new Error('여행자를 선택해 주세요');
+    if (!parseDate_(trip.dep)) throw new Error('출국일을 입력해 주세요');
     const row = findRowById_(sheet, id);
-    sheet.getRange(row, COL.PERSON, 1, 2).setValues([[payload.person, parseDate_(payload.dep)]]);
-    sheet.getRange(row, COL.RET).setValue(parseDate_(payload.ret) || '');
-    sheet.getRange(row, COL.COUNTRIES).setValue((payload.countries || []).join(', '));
-    sheet.getRange(row, COL.MEMO).setValue(payload.memo || '');
+    sheet.getRange(row, COL.PERSON, 1, 2).setValues([[trip.person, parseDate_(trip.dep)]]);
+    sheet.getRange(row, COL.RET).setValue(parseDate_(trip.ret) || '');
+    sheet.getRange(row, COL.COUNTRIES).setValue((trip.countries || []).join(', '));
+    sheet.getRange(row, COL.MEMO).setValue(trip.memo || '');
     refreshTripRow_(sheet, row, buildLookup_(ss));
     sortTrips_(sheet);
     rebuildStats_(ss);
-    return { data: getAppData() };
+    return { data: getAppData_() };
   });
 }
 
-function deleteTrip(id) {
+function deleteTrip_(id) {
   return withLock_(() => {
     const ss = getSpreadsheet_();
     const sheet = ss.getSheetByName(SHEET.TRIPS);
     sheet.deleteRow(findRowById_(sheet, id));
     rebuildStats_(ss);
-    return { data: getAppData() };
+    return { data: getAppData_() };
   });
 }
 
