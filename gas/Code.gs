@@ -32,26 +32,13 @@ const COL = { ID: 1, PERSON: 2, DEP: 3, RET: 4, DAYS: 5, COUNTRIES: 6, FLAGS: 7,
 
 const COUNTRY_HEADERS = ['국가', '코드', '국기', '국기 이미지', '별칭 (| 로 구분)'];
 
-// 출입국사실증명서(2000.01.01 ~ 2026.09.24)에 나온 김민정 출국 기록. 나라는 증명서에 없어서 직접 입력해야 합니다.
-const SEED_TRIPS = {
-  '김민정': [
-    ['2005-01-08', '2005-01-13'], ['2016-11-02', '2016-11-08'], ['2017-06-04', '2017-06-06'],
-    ['2017-09-09', '2017-09-11'], ['2019-03-09', '2019-03-14'], ['2019-09-04', '2019-09-08'],
-    ['2023-09-22', '2023-10-05'], ['2024-04-10', '2024-04-15'], ['2024-06-05', '2024-06-12'],
-    ['2025-01-18', '2025-01-20'], ['2025-03-21', '2025-03-26'], ['2025-04-30', '2025-05-04'],
-    ['2025-05-31', '2025-06-04'], ['2025-06-13', '2025-06-15'], ['2025-09-27', '2025-10-15'],
-    ['2026-02-11', '2026-02-18'], ['2026-03-02', '2026-03-04'], ['2026-04-04', '2026-04-07'],
-    ['2026-04-30', '2026-05-12'], ['2026-06-02', '2026-06-06'], ['2026-09-17', '2026-09-19'],
-  ],
-};
-
 const DATE_FORMAT = 'yyyy.mm.dd';
 const MISSING_COLOR = '#fff4c2';
 const UNKNOWN_COLOR = '#ffd6d6';
 
 /* ───────────────────────── 설치 ───────────────────────── */
 
-/** 처음 한 번 실행: 시트 만들기 + 국가목록 채우기 + 자동 국기 트리거 + 민정 출입국 기록 불러오기 */
+/** 처음 한 번 실행: 시트 만들기 + 국가목록 채우기 + 자동 국기 트리거 */
 function setup() {
   const ss = getSpreadsheet_();
   setupTripSheet_(ss);
@@ -59,25 +46,7 @@ function setup() {
   getOrCreateSheet_(ss, SHEET.STATS);
   getOrCreateSheet_(ss, SHEET.BY_COUNTRY);
   installEditTrigger_(ss);
-  seedTrips();
   refreshAll();
-}
-
-/** 출입국증명서 기록을 여행기록에 넣기 (이미 있는 출국일은 건너뜀) */
-function seedTrips() {
-  const ss = getSpreadsheet_();
-  const sheet = ss.getSheetByName(SHEET.TRIPS);
-  const existing = new Set(readTrips_(ss).map(t => t.person + '|' + t.dep));
-  const rows = [];
-  Object.keys(SEED_TRIPS).forEach(person => {
-    SEED_TRIPS[person].forEach(([dep, ret]) => {
-      if (existing.has(person + '|' + dep)) return;
-      rows.push([newId_(), person, parseDate_(dep), parseDate_(ret), '', '', '', '', '출입국증명서']);
-    });
-  });
-  if (!rows.length) return;
-  sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, TRIP_HEADERS.length).setValues(rows);
-  sortTrips_(sheet);
 }
 
 function setupTripSheet_(ss) {
@@ -314,7 +283,7 @@ function writeByCountrySheet_(ss, stats) {
 /**
  * 화면(HTML)은 GitHub Pages에 있고, 이 스크립트는 시트 저장/조회만 하는 API입니다.
  * 모든 요청은 POST, 본문은 JSON 문자열: { action, key, ... }
- *   action: 'get' | 'add' | 'update' | 'delete'
+ *   action: 'get' | 'add' | 'update' | 'delete' | 'import'
  * key: 가족 비밀번호 (스크립트 속성 FAMILY_KEY). 웹앱을 '모든 사용자'로 공개하므로 이걸로 막습니다.
  */
 function doPost(e) {
@@ -326,6 +295,7 @@ function doPost(e) {
       case 'add': return json_(Object.assign({ ok: true }, addTrip_(req.trip || {})));
       case 'update': return json_(Object.assign({ ok: true }, updateTrip_(req.id, req.trip || {})));
       case 'delete': return json_(Object.assign({ ok: true }, deleteTrip_(req.id)));
+      case 'import': return json_(Object.assign({ ok: true }, importTrips_(req.person, req.trips || [])));
       default: throw new Error('알 수 없는 요청: ' + req.action);
     }
   } catch (err) {
@@ -415,6 +385,39 @@ function updateTrip_(id, trip) {
     sortTrips_(sheet);
     rebuildStats_(ss);
     return { data: getAppData_() };
+  });
+}
+
+/**
+ * 출입국증명서에서 읽은 날짜 한꺼번에 넣기. trips: [{ dep, ret }]
+ * 증명서 파일 자체는 브라우저에서만 읽고, 여기로는 날짜만 옵니다.
+ * 같은 사람·같은 출국일이 이미 있으면 건너뜁니다.
+ */
+function importTrips_(person, trips) {
+  return withLock_(() => {
+    if (!FAMILY.some(f => f.name === person)) throw new Error('누구의 증명서인지 선택해 주세요');
+    const ss = getSpreadsheet_();
+    const sheet = ss.getSheetByName(SHEET.TRIPS);
+    const existing = new Set(readTrips_(ss).map(t => t.person + '|' + t.dep));
+    const rows = [];
+    let skipped = 0;
+    trips.forEach(t => {
+      const dep = parseDate_(t.dep);
+      if (!dep) return;
+      const key = person + '|' + formatIso_(dep);
+      if (existing.has(key)) { skipped++; return; }
+      existing.add(key);
+      rows.push([newId_(), person, dep, parseDate_(t.ret) || '', '', '', '', '', '출입국증명서']);
+    });
+    if (rows.length) {
+      const start = sheet.getLastRow() + 1;
+      sheet.getRange(start, 1, rows.length, TRIP_HEADERS.length).setValues(rows);
+      const lookup = buildLookup_(ss);
+      for (let r = start; r < start + rows.length; r++) refreshTripRow_(sheet, r, lookup);
+      sortTrips_(sheet);
+    }
+    rebuildStats_(ss);
+    return { data: getAppData_(), added: rows.length, skipped: skipped };
   });
 }
 

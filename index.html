@@ -65,6 +65,22 @@
   #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: #1d2433; color: #fff;
            padding: 10px 16px; border-radius: 10px; font-size: 14px; opacity: 0; transition: opacity .2s; pointer-events: none; }
   #toast.show { opacity: 1; }
+  .drop { display: block; border: 2px dashed var(--line); border-radius: 12px; padding: 22px; text-align: center;
+          color: var(--muted); cursor: pointer; background: #fafbfd; }
+  .drop.over { border-color: var(--accent); background: var(--accent-soft); }
+  .drop input { display: none; }
+  .progress { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin-top: 10px; }
+  .progress i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+  #certTable input[type=date] { padding: 6px 4px; font-size: 14px; min-width: 0; width: 100%; }
+  #certTable td:nth-child(1), #certTable td:nth-child(2) { width: 42%; }
+  #certTable tr.warnrow td { border-bottom: 1px solid var(--line); padding-top: 0; }
+  #certTable td { padding: 4px 2px; }
+  .delx { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 15px; padding: 4px; }
+  .tag { font-size: 12px; padding: 2px 7px; border-radius: 999px; white-space: nowrap; }
+  .tag.new { background: #e3f6e8; color: #1e7b3a; }
+  .tag.dup { background: #eef1f6; color: var(--muted); }
+  .tag.warn { background: #ffe1e1; color: var(--danger); }
+  .privacy { background: #f0f5ff; border-radius: 10px; padding: 10px 12px; font-size: 13px; color: #34405a; margin-bottom: 4px; }
   .loading { text-align: center; color: var(--muted); padding: 40px 0; }
 </style>
 </head>
@@ -74,7 +90,8 @@
   <nav>
     <button data-tab="stats" class="on">통계</button>
     <button data-tab="trips">여행 목록</button>
-    <button data-tab="form">+ 여행 추가</button>
+    <button data-tab="form">+ 추가</button>
+    <button data-tab="cert">📄 증명서</button>
   </nav>
 </header>
 
@@ -120,6 +137,35 @@
         <button class="btn" id="saveBtn">저장</button>
         <button class="btn ghost hidden" id="cancelBtn">취소</button>
         <button class="btn danger hidden" id="deleteBtn">삭제</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 출입국증명서 불러오기 -->
+  <section id="tab-cert" class="hidden">
+    <div class="card">
+      <h3 style="margin-top:0">📄 출입국증명서로 한 번에 불러오기</h3>
+      <div class="privacy">🔒 증명서 파일은 <b>이 휴대폰/컴퓨터 안에서만</b> 읽어요. 주민번호·여권번호는 저장되지 않고,
+        <b>출국일·입국일만</b> 시트에 저장돼요.</div>
+      <label>누구의 증명서인가요?</label>
+      <div class="filters" id="certPerson"></div>
+      <label>증명서 파일 (정부24에서 받은 PDF 또는 사진)</label>
+      <label class="drop" id="certDrop">
+        <input type="file" id="certFile" accept="application/pdf,image/*">
+        <div id="certDropText">여기를 눌러 파일 선택 (또는 끌어다 놓기)</div>
+      </label>
+      <div id="certStatus" class="note"></div>
+      <div class="progress hidden" id="certProgress"><i></i></div>
+    </div>
+
+    <div class="card hidden" id="certResult">
+      <h3 style="margin-top:0" id="certSummary"></h3>
+      <div class="note" style="margin:0 0 10px">글자 인식이 틀릴 수 있어요. 증명서와 한 번 비교해 보고, 틀린 날짜는 바로 고쳐 주세요.
+        빨간 표시는 확인이 필요한 줄이에요.</div>
+      <div style="overflow-x:auto"><table id="certTable"></table></div>
+      <div class="actions">
+        <button class="btn ghost" id="certAddRow">+ 줄 추가</button>
+        <button class="btn" id="certSave">저장하기</button>
       </div>
     </div>
   </section>
@@ -172,7 +218,7 @@
 
   function showTab(name) {
     document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
-    ['stats', 'trips', 'form'].forEach(t => $('tab-' + t).classList.toggle('hidden', t !== name));
+    ['stats', 'trips', 'form', 'cert'].forEach(t => $('tab-' + t).classList.toggle('hidden', t !== name));
     window.scrollTo(0, 0);
   }
   document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
@@ -321,9 +367,257 @@
     catch (e) { toast('오류: ' + e.message); }
   };
 
+
+  /* ── 출입국증명서 불러오기 ──
+     PDF에 글자 정보가 있으면 그대로 읽고, 스캔본이면 브라우저 안에서 OCR(Tesseract)로 읽습니다.
+     파일은 서버로 보내지 않습니다. */
+  const LIB = {
+    pdf: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js',
+    pdfWorker: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js',
+    tesseract: 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js',
+    tessWorker: 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/worker.min.js',
+    tessCore: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5.1.1',
+    tessLang: 'https://cdn.jsdelivr.net/npm/@tesseract.js-data/eng@1.0.0/4.0.0_best_int',
+  };
+  let certPerson = '';
+  let certRows = [];   // [{ dep, ret }]
+  const loaded = {};
+  function loadScript(src) {
+    return loaded[src] || (loaded[src] = new Promise((resolve, reject) => {
+      const el = document.createElement('script');
+      el.src = src; el.onload = resolve; el.onerror = () => reject(new Error('라이브러리를 불러오지 못했어요'));
+      document.head.appendChild(el);
+    }));
+  }
+
+  function certProgress(text, ratio) {
+    $('certStatus').textContent = text;
+    $('certProgress').classList.toggle('hidden', ratio == null);
+    if (ratio != null) $('certProgress').firstElementChild.style.width = Math.round(ratio * 100) + '%';
+  }
+
+  function renderCertPerson() {
+    $('certPerson').innerHTML = DATA.family.map(f =>
+      `<button class="pill ${certPerson === f.name ? 'on' : ''}" data-person="${esc(f.name)}">${esc(f.name)}</button>`).join('');
+    $('certPerson').querySelectorAll('button').forEach(b => b.onclick = () => {
+      certPerson = b.dataset.person; renderCertPerson(); if (certRows.length) renderCertTable();
+    });
+  }
+
+  // 'O'→0, 'l'→1 같은 OCR 오인식을 고친 뒤 날짜(yyyy.mm.dd)면 'yyyy-mm-dd' 반환
+  function tokenToDate(text) {
+    const t = text.replace(/[()\[\]]/g, '').replace(/[Oo]/g, '0').replace(/[lI|]/g, '1').replace(/,/g, '.');
+    const m = t.match(/^((?:19|20)\d{2})[.\-](\d{2})[.\-](\d{2})\.?$/);  // 증명서는 항상 두 자리 (잘린 인식 방지)
+    if (!m) return null;
+    const mo = Number(m[2]), d = Number(m[3]);
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+    return `${m[1]}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  }
+
+  /**
+   * 한 쪽의 단어 목록 [{ text, x, y, h }] (y는 위에서부터) → 출국/입국 쌍 목록
+   * 표 머리글 'Departure'/'Entry' 위치로 칸을 나누고, 'Reference Period' 위쪽의 날짜만 씁니다.
+   */
+  function parsePage(words) {
+    // 표 머리글: 같은 줄에 Departure 와 Entry 가 함께 있어야 인정 (왼쪽 'Date of Entry' 같은 글자 오인 방지)
+    const heads = words.filter(w => /Departure|Entry/.test(w.text) && !/DEPARTURE|ENTRY/.test(w.text));
+    let headRow = null, top = -Infinity;
+    heads.slice().sort((a, b) => a.y - b.y).some(h0 => {
+      const row = heads.filter(w => Math.abs(w.y - h0.y) < Math.max(h0.h, 10))
+        .map(w => ({ x: w.x, kind: /Departure/.test(w.text) ? 'dep' : 'ret' })).sort((a, b) => a.x - b.x);
+      if (row[0].kind === 'dep' && row.some(r => r.kind === 'ret')) { headRow = row; top = h0.y; return true; }
+      return false;
+    });
+
+    // 조회기간(2000.01.01 부터 …)은 'Reference Period' 글자보다 살짝 위에 있어서 여유를 둠
+    const ref = words.filter(w => /Reference|Period/.test(w.text) && w.y > top);
+    const bottom = ref.length ? Math.min(...ref.map(w => w.y - w.h * 1.5)) : Infinity;
+    // 같은 줄에 (from) / (to) / Issuance 가 있으면 여행 날짜가 아님
+    const stops = words.filter(w => /from|\(to\)|^to\)?$|Issuance/i.test(w.text));
+    const isStopRow = w => stops.some(s => Math.abs(s.y - w.y) < Math.max(w.h, s.h));
+
+    const dates = words.map(w => Object.assign({ date: tokenToDate(w.text) }, w))
+      .filter(w => w.date && w.y > top + 1 && w.y < bottom && !isStopRow(w)).sort((a, b) => a.y - b.y);
+    if (!dates.length) return [];
+
+    // 줄 묶기 (사진이 살짝 기울어도 같은 줄로 보도록 글자 높이 기준)
+    let lines = [];
+    dates.forEach(w => {
+      const line = lines[lines.length - 1];
+      if (line && Math.abs(line[0].y - w.y) < Math.max(w.h * 0.7, 6)) line.push(w); else lines.push([w]);
+    });
+
+    if (!headRow) {
+      // 머리글을 못 읽은 경우: 날짜가 2개 이상인 줄부터 표로 보고, 날짜들의 x 위치로 칸을 나눔
+      const multi = lines.filter(l => l.length >= 2);
+      if (!multi.length) return lines.map(l => ({ dep: l[0].date, ret: '' }));
+      const firstY = multi[0][0].y;
+      lines = lines.filter(l => l[0].y >= firstY - 1);
+      const hs = dates.map(w => w.h).sort((a, b) => a - b);
+      const gap = hs[Math.floor(hs.length / 2)] * 2;
+      const xs = [].concat(...multi).map(w => w.x).sort((a, b) => a - b);
+      const cols = [[xs[0]]];
+      xs.slice(1).forEach(x => { if (x - cols[cols.length - 1].slice(-1)[0] > gap) cols.push([x]); else cols[cols.length - 1].push(x); });
+      headRow = cols.map((c, i) => ({ x: c.reduce((s, v) => s + v, 0) / c.length, kind: i % 2 ? 'ret' : 'dep' }));
+    }
+
+    const pairs = [];
+    lines.forEach(line => {
+      const slots = headRow.map(() => '');
+      line.forEach(w => {
+        let best = 0;
+        headRow.forEach((h, i) => { if (Math.abs(h.x - w.x) < Math.abs(headRow[best].x - w.x)) best = i; });
+        slots[best] = w.date;
+      });
+      for (let i = 0; i < headRow.length; i++) {
+        if (headRow[i].kind !== 'dep') continue;
+        const ret = headRow[i + 1] && headRow[i + 1].kind === 'ret' ? slots[i + 1] : '';
+        if (slots[i] || ret) pairs.push({ dep: slots[i], ret: ret });
+      }
+    });
+    return pairs;
+  }
+
+  async function wordsFromPdfText(page, viewport) {
+    const content = await page.getTextContent();
+    const words = [];
+    content.items.forEach(it => {
+      const [x, y] = viewport.convertToViewportPoint(it.transform[4], it.transform[5]);
+      const h = Math.abs(it.transform[3]) * viewport.scale;
+      // 한 덩어리에 날짜 여러 개가 붙어 있을 수 있어 공백 기준으로 나눔 (x는 글자 비율로 추정)
+      const parts = it.str.split(/(\s+)/);
+      let offset = 0;
+      parts.forEach(part => {
+        if (part.trim()) words.push({ text: part, x: x + (it.width * viewport.scale) * (offset / Math.max(it.str.length, 1)), y: y - h, h: h });
+        offset += part.length;
+      });
+    });
+    return words;
+  }
+
+  let tessWorker = null;
+  let currentOcrProgress = () => {};
+  async function ocrWords(canvas, onProgress) {
+    await loadScript(LIB.tesseract);
+    if (!tessWorker) {
+      tessWorker = await Tesseract.createWorker('eng', 1, {
+        workerPath: LIB.tessWorker, corePath: LIB.tessCore, langPath: LIB.tessLang,
+        logger: m => { if (m.status === 'recognizing text') currentOcrProgress(m.progress); },
+      });
+    }
+    currentOcrProgress = onProgress;
+    const { data } = await tessWorker.recognize(canvas);
+    return data.words.map(w => ({ text: w.text, x: w.bbox.x0, y: w.bbox.y0, h: w.bbox.y1 - w.bbox.y0 }));
+  }
+
+  async function readCertificate(file) {
+    const pairs = [];
+    if (file.type === 'application/pdf' || /\.pdf$/i.test(file.name)) {
+      certProgress('PDF 여는 중…', 0);
+      await loadScript(LIB.pdf);
+      pdfjsLib.GlobalWorkerOptions.workerSrc = LIB.pdfWorker;
+      const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+      for (let n = 1; n <= pdf.numPages; n++) {
+        const page = await pdf.getPage(n);
+        const viewport = page.getViewport({ scale: 3 });
+        let found = parsePage(await wordsFromPdfText(page, viewport));
+        if (!found.length) {  // 스캔본 → OCR
+          const canvas = document.createElement('canvas');
+          canvas.width = viewport.width; canvas.height = viewport.height;
+          await page.render({ canvasContext: canvas.getContext('2d'), viewport: viewport }).promise;
+          certProgress(`${n}/${pdf.numPages}쪽 글자 읽는 중…`, (n - 1) / pdf.numPages);
+          found = parsePage(await ocrWords(canvas, p => certProgress(`${n}/${pdf.numPages}쪽 글자 읽는 중…`, (n - 1 + p) / pdf.numPages)));
+        }
+        pairs.push(...found);
+      }
+    } else {
+      certProgress('사진에서 글자 읽는 중…', 0);
+      const img = await createImageBitmap(file);
+      const scale = Math.max(1, 2400 / Math.max(img.width, img.height));
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width * scale; canvas.height = img.height * scale;
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      pairs.push(...parsePage(await ocrWords(canvas, p => certProgress('사진에서 글자 읽는 중…', p))));
+    }
+    return pairs.sort((a, b) => (a.dep || a.ret).localeCompare(b.dep || b.ret));
+  }
+
+  function certRowStatus(r, i) {
+    if (!r.dep) return ['warn', '출국일 없음'];
+    if (!r.ret && i < certRows.length - 1) return ['warn', '입국일 없음'];
+    if (r.ret && r.ret < r.dep) return ['warn', '입국일이 더 빠름'];
+    if (r.ret && (new Date(r.ret) - new Date(r.dep)) / 86400000 > 180) return ['warn', '기간이 너무 김'];
+    const prev = certRows[i - 1];
+    if (prev && prev.ret && prev.ret > r.dep) return ['warn', '앞 여행과 겹침'];
+    if (certPerson && DATA.trips.some(t => t.person === certPerson && t.dep === r.dep)) return ['dup', '이미 있음'];
+    return ['new', '새로 추가'];
+  }
+
+  function renderCertTable() {
+    const statuses = certRows.map(certRowStatus);
+    const count = k => statuses.filter(s => s[0] === k).length;
+    $('certSummary').textContent = `출국 ${certRows.length}건을 찾았어요` +
+      (certPerson ? ` · 새로 ${count('new') + count('warn')}건` + (count('dup') ? `, 이미 있음 ${count('dup')}건` : '') : '');
+    $('certTable').innerHTML = `<tr><th>출국일</th><th>입국일</th><th></th><th></th></tr>` +
+      certRows.map((r, i) => `<tr${statuses[i][0] === 'warn' ? ' style="background:#fff5f5"' : ''}>
+        <td><input type="date" data-i="${i}" data-k="dep" value="${esc(r.dep)}"></td>
+        <td><input type="date" data-i="${i}" data-k="ret" value="${esc(r.ret)}"></td>
+        <td><span class="tag ${statuses[i][0]}">${{ new: '새로', dup: '있음', warn: '⚠️' }[statuses[i][0]]}</span></td>
+        <td><button class="delx" data-del="${i}" title="이 줄 지우기">✕</button></td></tr>` +
+        (statuses[i][0] === 'warn' ? `<tr class="warnrow"><td colspan="4"><span class="tag warn">${statuses[i][1]} — 증명서와 비교해 고쳐 주세요</span></td></tr>` : '')).join('');
+    $('certTable').querySelectorAll('input').forEach(el => el.onchange = () => {
+      certRows[el.dataset.i][el.dataset.k] = el.value; renderCertTable();
+    });
+    $('certTable').querySelectorAll('[data-del]').forEach(b => b.onclick = () => {
+      certRows.splice(Number(b.dataset.del), 1); renderCertTable();
+    });
+    $('certResult').classList.remove('hidden');
+  }
+
+  async function handleCertFile(file) {
+    if (!file) return;
+    $('certDropText').textContent = file.name;
+    $('certResult').classList.add('hidden');
+    try {
+      certRows = await readCertificate(file);
+      certProgress(certRows.length ? '다 읽었어요. 아래 날짜를 확인해 주세요.' : '날짜를 찾지 못했어요. 선명한 파일인지 확인하거나 줄을 직접 추가해 주세요.', null);
+      renderCertTable();
+    } catch (e) {
+      certProgress('읽기 실패: ' + e.message, null);
+    } finally {
+      $('certFile').value = '';
+    }
+  }
+
+  $('certFile').onchange = () => handleCertFile($('certFile').files[0]);
+  ['dragover', 'dragenter'].forEach(t => $('certDrop').addEventListener(t, e => { e.preventDefault(); $('certDrop').classList.add('over'); }));
+  ['dragleave', 'drop'].forEach(t => $('certDrop').addEventListener(t, e => { e.preventDefault(); $('certDrop').classList.remove('over'); }));
+  $('certDrop').addEventListener('drop', e => handleCertFile(e.dataTransfer.files[0]));
+  $('certAddRow').onclick = () => { certRows.push({ dep: '', ret: '' }); renderCertTable(); };
+
+  $('certSave').onclick = async () => {
+    if (!certPerson) return toast('누구의 증명서인지 먼저 선택해 주세요');
+    if (certRows.some(r => !r.dep && r.ret)) return toast('출국일이 빈 줄이 있어요. 날짜를 고치거나 ✕로 지워 주세요');
+    const noRet = certRows.filter((r, i) => r.dep && !r.ret && i < certRows.length - 1).length;
+    if (noRet && !confirm(`입국일이 빈 줄이 ${noRet}개 있어요. 그대로 저장할까요?`)) return;
+    const rows = certRows.filter(r => r.dep);
+    if (!rows.length) return toast('저장할 날짜가 없어요');
+    $('certSave').disabled = true;
+    try {
+      const res = await api('import', { person: certPerson, trips: rows });
+      DATA = res.data; renderAll();
+      toast(`${res.added}건 저장했어요` + (res.skipped ? ` (이미 있던 ${res.skipped}건은 건너뜀)` : '') + '. 이제 나라를 채워 주세요!');
+      filterPerson = certPerson; certRows = [];
+      $('certResult').classList.add('hidden'); $('certDropText').textContent = '여기를 눌러 파일 선택 (또는 끌어다 놓기)';
+      certProgress('', null);
+      renderTrips(); showTab('trips');
+    } catch (e) { toast('오류: ' + e.message); }
+    finally { $('certSave').disabled = false; }
+  };
+
   function renderAll() {
     $('countryList').innerHTML = DATA.countries.map(c => `<option value="${esc(c.name)}">`).join('');
-    renderStats(); renderTrips(); renderPeoplePick();
+    renderStats(); renderTrips(); renderPeoplePick(); renderCertPerson();
   }
 
   api('get').then(res => {
