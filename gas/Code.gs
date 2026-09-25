@@ -42,6 +42,9 @@ const DATE_FORMAT = 'yyyy.mm.dd';
 const MISSING_COLOR = '#fff4c2';
 const UNKNOWN_COLOR = '#ffd6d6';
 const COUNTRY_CACHE_KEY = 'countryRows_v1';
+// 'get' 응답 전체를 캐시 (저장할 때마다 새로 채움, 시트를 직접 고치면 지움)
+const APP_CACHE_KEY = 'appData_v1';
+const CACHE_SECONDS = 6 * 60 * 60;
 
 // 통계 시트 고정 배치 (가족 수가 정해져 있어서 위치가 바뀌지 않음 → 서식은 한 번만)
 const STATS_HEADER = ['여행자', '출국 횟수', '나라 방문 횟수', '가본 나라 수', '도시 방문 횟수', '가본 도시 수',
@@ -60,6 +63,7 @@ function setup() {
   formatByCountrySheet_(getOrCreateSheet_(ss, SHEET.BY_COUNTRY));
   installEditTrigger_(ss);
   CacheService.getScriptCache().remove(COUNTRY_CACHE_KEY);
+  lookupCache_ = null;
   refreshAll();
 }
 
@@ -267,6 +271,7 @@ function handleEdit(e) {
   const sheet = e.range.getSheet();
   const name = sheet.getName();
   const ss = sheet.getParent();
+  if (name === SHEET.COUNTRIES || name === SHEET.TRIPS) clearAppCache_();
   if (name === SHEET.COUNTRIES) {
     CacheService.getScriptCache().remove(COUNTRY_CACHE_KEY);
     lookupCache_ = null;
@@ -296,6 +301,7 @@ function refreshAll() {
   const store = loadStore_(ss);
   saveStore_(store, lookup);
   rebuildStats_(ss, tripsFromRows_(store.rows, lookup));
+  clearAppCache_();
 }
 
 /** 메뉴: 메모에 적어 둔 도시 이름을 '방문도시' 칸으로 옮김 (목록에 있는 도시만, 나머지 메모는 그대로) */
@@ -313,6 +319,7 @@ function moveMemoCities() {
   });
   saveStore_(store, lookup);
   rebuildStats_(ss, tripsFromRows_(store.rows, lookup));
+  clearAppCache_();
   const msg = '메모에서 도시 ' + moved + '개를 방문도시로 옮겼어요.';
   try { SpreadsheetApp.getUi().alert(msg); } catch (e) { Logger.log(msg); }
 }
@@ -481,7 +488,7 @@ function doPost(e) {
     const req = JSON.parse((e && e.postData && e.postData.contents) || '{}');
     checkKey_(req.key);
     switch (req.action) {
-      case 'get': return json_({ ok: true, data: getAppData_() });
+      case 'get': return jsonText_('{"ok":true,"data":' + getAppDataJson_() + '}');
       case 'add': return json_(Object.assign({ ok: true }, addTrip_(req.trip || {})));
       case 'update': return json_(Object.assign({ ok: true }, updateTrip_(req.id, req.trip || {})));
       case 'delete': return json_(Object.assign({ ok: true }, deleteTrip_(req.id)));
@@ -499,7 +506,11 @@ function doGet() {
 }
 
 function json_(obj) {
-  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+  return jsonText_(JSON.stringify(obj));
+}
+
+function jsonText_(text) {
+  return ContentService.createTextOutput(text).setMimeType(ContentService.MimeType.JSON);
 }
 
 /** 가족 비밀번호 확인 */
@@ -521,18 +532,25 @@ function setFamilyKey() {
   Logger.log('가족 비밀번호를 저장했습니다. 이제 key 값을 원래대로 되돌려도 됩니다.');
 }
 
-/** 처음 불러올 때: 가족, 국가·도시 목록, 여행, 통계 (시트 쓰기 없음) */
-function getAppData_() {
+/** 처음 불러올 때: 가족, 국가·도시 목록, 여행, 통계. 캐시에 있으면 시트를 아예 안 읽음 */
+function getAppDataJson_() {
+  const hit = cacheGet_(APP_CACHE_KEY);
+  if (hit) return hit;
   const ss = getSpreadsheet_();
   const lookup = buildLookup_(ss);
   const trips = tripsFromRows_(loadStore_(ss).rows, lookup);
-  return {
-    family: FAMILY,
-    countries: lookup.list,
-    cities: cityData_(),
-    trips: trips,
-    stats: computeStats_(trips),
-  };
+  return cacheAppData_(lookup, trips, computeStats_(trips));
+}
+
+function cacheAppData_(lookup, trips, stats) {
+  const text = JSON.stringify({ family: FAMILY, countries: lookup.list, cities: cityData_(), trips: trips, stats: stats });
+  cachePut_(APP_CACHE_KEY, text);
+  return text;
+}
+
+/** 시트를 직접 고쳤을 때 등: 다음 'get'이 시트에서 새로 읽도록 */
+function clearAppCache_() {
+  cacheRemove_(APP_CACHE_KEY);
 }
 
 /** 쓰기 공통: 잠금 → 한 번 읽기 → change(store) → 한 번 쓰기 → 통계 시트 → 가벼운 응답 */
@@ -545,6 +563,7 @@ function mutate_(change) {
     saveStore_(store, lookup);
     const trips = tripsFromRows_(store.rows, lookup);
     const stats = rebuildStats_(ss, trips);
+    cacheAppData_(lookup, trips, stats);
     return Object.assign({ data: { trips: trips, stats: stats } }, extra);
   });
 }
@@ -630,7 +649,36 @@ function deleteTrip_(id) {
 
 let spreadsheet_ = null;
 function getSpreadsheet_() {
-  return spreadsheet_ || (spreadsheet_ = SpreadsheetApp.openById(SPREADSHEET_ID));
+  if (spreadsheet_) return spreadsheet_;
+  // 시트에 붙어 있는 스크립트면 getActiveSpreadsheet가 openById보다 빠름
+  try {
+    const active = SpreadsheetApp.getActiveSpreadsheet();
+    if (active && active.getId() === SPREADSHEET_ID) return (spreadsheet_ = active);
+  } catch (e) { /* 독립 스크립트 */ }
+  return (spreadsheet_ = SpreadsheetApp.openById(SPREADSHEET_ID));
+}
+
+/* CacheService는 값 하나가 100KB까지라서 긴 글은 나눠서 저장 */
+const CACHE_CHUNK = 30000;
+function cachePut_(key, text) {
+  const cache = CacheService.getScriptCache();
+  const parts = {};
+  const n = Math.ceil(text.length / CACHE_CHUNK) || 1;
+  for (let i = 0; i < n; i++) parts[key + '_' + i] = text.slice(i * CACHE_CHUNK, (i + 1) * CACHE_CHUNK);
+  parts[key + '_n'] = String(n);
+  try { cache.putAll(parts, CACHE_SECONDS); } catch (e) { cacheRemove_(key); }
+}
+function cacheGet_(key) {
+  const cache = CacheService.getScriptCache();
+  const n = Number(cache.get(key + '_n'));
+  if (!n) return null;
+  const keys = Array.from({ length: n }, (_, i) => key + '_' + i);
+  const got = cache.getAll(keys);
+  if (keys.some(k => got[k] == null)) return null;
+  return keys.map(k => got[k]).join('');
+}
+function cacheRemove_(key) {
+  CacheService.getScriptCache().remove(key + '_n');
 }
 
 function getOrCreateSheet_(ss, name) {

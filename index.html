@@ -89,13 +89,14 @@
   .tag.dup { background: #eef1f6; color: var(--muted); }
   .tag.warn { background: #ffe1e1; color: var(--danger); }
   .privacy { background: #f0f5ff; border-radius: 10px; padding: 10px 12px; font-size: 13px; color: #34405a; margin-bottom: 4px; }
+  #setBtn { float: right; border: 0; background: none; font-size: 18px; cursor: pointer; padding: 0 2px; }
   #sync { font-size: 12px; font-weight: 400; opacity: .85; margin-left: 6px; vertical-align: middle; }
   .loading { text-align: center; color: var(--muted); padding: 40px 0; }
 </style>
 </head>
 <body>
 <header>
-  <h1>✈️ 우리 가족 여행기록 <span id="sync"></span></h1>
+  <h1>✈️ 우리 가족 여행기록 <span id="sync"></span><button id="setBtn" title="설정">⚙️</button></h1>
   <nav>
     <button data-tab="stats" class="on">통계</button>
     <button data-tab="trips">여행 목록</button>
@@ -106,6 +107,21 @@
 
 <main>
   <div id="loading" class="loading">불러오는 중…</div>
+
+  <!-- 설정 / 연결 문제 -->
+  <div id="settings" class="card hidden">
+    <h3 style="margin-top:0">⚙️ 설정</h3>
+    <div id="setMsg" class="privacy hidden" style="background:#fdeaea;color:#8a1c1c"></div>
+    <label>웹앱 주소 (Apps Script → 배포 → 배포 관리 → 웹 앱 URL, /exec 로 끝나는 주소)</label>
+    <input type="text" id="setApi" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off">
+    <div class="actions">
+      <button class="btn" id="setSave">저장하고 다시 불러오기</button>
+      <button class="btn ghost" id="setReset">기본 주소로</button>
+      <button class="btn ghost" id="setForgetKey">비밀번호 다시 입력</button>
+      <button class="btn ghost" id="setClose">닫기</button>
+    </div>
+    <div class="note">주소와 비밀번호는 이 기기에만 저장돼요. 가족에게는 <b>화면주소?api=웹앱주소</b> 로 링크를 보내면 한 번에 설정돼요.</div>
+  </div>
 
   <!-- 통계 -->
   <section id="tab-stats" class="hidden">
@@ -201,29 +217,71 @@
   }
 
   // Apps Script 웹앱 주소 (배포 → 배포 관리에서 복사). 시트 저장/조회만 담당합니다.
-  const API_URL = 'https://script.google.com/macros/s/AKfycbxisKGyYyoV11Pw70RZEYfyTl99QTAY9NYjUJvT5sZNSQdoPpofTFJO8IEFD7cfIM_S/exec';
+  // Apps Script 웹앱 기본 주소 (배포 → 배포 관리에서 복사). 화면의 ⚙️ 설정에서 바꾸면 이 기기에 저장됩니다.
+  const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbxisKGyYyoV11Pw70RZEYfyTl99QTAY9NYjUJvT5sZNSQdoPpofTFJO8IEFD7cfIM_S/exec';
   const KEY_STORAGE = 'famTravelKey';
+  const API_STORAGE = 'famTravelApi';
+  const API_TIMEOUT_MS = 45000;
 
-  function getKey() { try { return localStorage.getItem(KEY_STORAGE) || ''; } catch (e) { return ''; } }
-  function setKey(k) { try { k ? localStorage.setItem(KEY_STORAGE, k) : localStorage.removeItem(KEY_STORAGE); } catch (e) {} }
+  const store = {
+    get: k => { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } },
+    set: (k, v) => { try { v ? localStorage.setItem(k, v) : localStorage.removeItem(k); } catch (e) {} },
+  };
+  const getKey = () => store.get(KEY_STORAGE);
+  const setKey = k => store.set(KEY_STORAGE, k);
+  const getApiUrl = () => store.get(API_STORAGE) || DEFAULT_API_URL;
+  function isValidApiUrl(u) { return /^https:\/\/script\.google\.com\/(a\/[^/]+\/)?macros\/s\/[\w-]+\/exec\/?$/.test(u); }
+  // ?api=웹앱주소 로 열면 그 주소를 이 기기에 저장 (가족에게 링크로 공유할 때)
+  (() => {
+    const u = new URLSearchParams(location.search).get('api');
+    if (u && isValidApiUrl(u)) { store.set(API_STORAGE, u); history.replaceState(null, '', location.pathname); }
+  })();
+
+  class ApiError extends Error {
+    constructor(message, kind) { super(message); this.kind = kind; }
+  }
 
   // Content-Type을 지정하지 않으면 text/plain으로 보내져서 CORS 사전요청 없이 Apps Script에 전달됩니다.
   async function api(action, extra) {
     let key = getKey();
     if (!key) {
       key = (prompt('가족 비밀번호를 입력해 주세요') || '').trim();
-      if (!key) throw new Error('비밀번호가 필요해요');
+      if (!key) throw new ApiError('비밀번호가 필요해요', 'auth');
     }
-    const res = await fetch(API_URL, { method: 'POST', body: JSON.stringify(Object.assign({ action, key }, extra)) });
-    if (!res.ok) throw new Error('서버 응답 오류 (' + res.status + ')');
-    const body = await res.json();
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), API_TIMEOUT_MS);
+    let res, text;
+    try {
+      res = await fetch(getApiUrl(), { method: 'POST', body: JSON.stringify(Object.assign({ action, key }, extra)), signal: ctrl.signal });
+      text = await res.text();
+    } catch (e) {
+      if (e.name === 'AbortError') throw new ApiError(`서버가 ${API_TIMEOUT_MS / 1000}초 넘게 응답하지 않아요. 잠시 뒤 다시 시도해 주세요.`, 'timeout');
+      throw new ApiError('웹앱에 연결하지 못했어요. 인터넷 연결을 확인하고, 배포의 액세스 권한이 "모든 사용자"인지 확인해 주세요.', 'network');
+    } finally { clearTimeout(timer); }
+    if (res.status === 404) throw new ApiError('웹앱 주소를 찾을 수 없어요 (404). 배포 주소가 바뀌었거나 배포가 보관처리된 것 같아요.', 'notfound');
+    if (!res.ok) throw new ApiError('서버 응답 오류 (' + res.status + ')', 'http');
+    let body;
+    try { body = JSON.parse(text); } catch (e) {
+      const title = (text.match(/<title>([^<]*)<\/title>/i) || [])[1] || '';
+      throw new ApiError('웹앱이 데이터 대신 웹페이지를 돌려줬어요' + (title ? ` ("${title}")` : '') +
+        '. Code.gs를 붙여 넣은 뒤 "새 버전"으로 배포했는지, 액세스 권한이 "모든 사용자"인지 확인해 주세요.', 'html');
+    }
     if (!body.ok) {
       if (body.auth) { setKey(''); return api(action, extra); }
-      throw new Error(body.error);
+      throw new ApiError(body.error, 'server');
     }
     setKey(key);
     return body;
   }
+
+  /* ── ⚙️ 설정: 웹앱 주소·비밀번호 ── */
+  function openSettings(message) {
+    $('setMsg').textContent = message || '';
+    $('setMsg').classList.toggle('hidden', !message);
+    $('setApi').value = getApiUrl();
+    $('settings').classList.remove('hidden');
+  }
+  function closeSettings() { $('settings').classList.add('hidden'); }
 
   function showTab(name) {
     document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
@@ -806,22 +864,48 @@
       }).join('');
   }
 
+  $('setBtn').onclick = () => openSettings();
+  $('setClose').onclick = closeSettings;
+  $('setReset').onclick = () => { $('setApi').value = DEFAULT_API_URL; };
+  $('setForgetKey').onclick = () => { setKey(''); toast('다음 요청 때 비밀번호를 다시 물어볼게요'); };
+  $('setSave').onclick = () => {
+    const u = $('setApi').value.trim();
+    if (!isValidApiUrl(u)) return toast('https://script.google.com/macros/s/…/exec 형태의 주소를 넣어 주세요');
+    store.set(API_STORAGE, u === DEFAULT_API_URL ? '' : u);
+    closeSettings(); loadFresh();
+  };
+
+  function showLoadError(e) {
+    const fixable = ['notfound', 'html', 'network'].indexOf(e.kind) >= 0;
+    if (DATA) {
+      setSync('⚠️ 최신 기록을 못 불러왔어요');
+      if (fixable) openSettings(e.message); else toast('불러오기 실패: ' + e.message);
+    } else {
+      $('loading').innerHTML = `<div class="card" style="text-align:left">⚠️ 불러오기 실패<div class="note" style="font-size:14px">${esc(e.message)}</div>
+        <div class="actions"><button class="btn" id="retryBtn">다시 시도</button><button class="btn ghost" id="fixBtn">웹앱 주소 바꾸기</button></div></div>`;
+      $('retryBtn').onclick = () => { $('loading').textContent = '불러오는 중…'; loadFresh(); };
+      $('fixBtn').onclick = () => openSettings(e.message);
+      if (fixable) openSettings(e.message);
+    }
+  }
+
   // 1) 기기에 저장된 지난 데이터를 바로 보여 주고  2) 서버에서 최신 데이터를 받아 바꿈
+  function loadFresh() {
+    if (DATA) setSync('최신 기록 확인 중…');
+    return api('get').then(res => {
+      const first = !DATA;
+      // 캐시를 보여 주는 사이에 저장한 게 있으면 그 결과가 더 최신이므로 덮지 않음
+      if (!queue.length && !syncing) { DATA = res.data; renderAll(); saveLocal(); }
+      if (first) { $('loading').classList.add('hidden'); resetForm(); showTab('stats'); }
+      if (!queue.length && !syncing) setSync('');
+    }).catch(showLoadError);
+  }
+
   const cached = loadLocal();
   if (cached && cached.family && cached.trips) {
     DATA = cached; $('loading').classList.add('hidden'); renderAll(); resetForm(); showTab('stats');
-    setSync('최신 기록 확인 중…');
   }
-  api('get').then(res => {
-    const first = !DATA;
-    // 캐시를 보여 주는 사이에 저장한 게 있으면 그 결과가 더 최신이므로 덮지 않음
-    if (!queue.length && !syncing) { DATA = res.data; renderAll(); saveLocal(); }
-    if (first) { $('loading').classList.add('hidden'); resetForm(); showTab('stats'); }
-    if (!queue.length && !syncing) setSync('');
-  }).catch(e => {
-    if (DATA) { setSync('⚠️ 최신 기록을 못 불러왔어요'); toast('불러오기 실패: ' + e.message); }
-    else $('loading').textContent = '불러오기 실패: ' + e.message + ' — 새로고침 해 주세요';
-  });
+  loadFresh();
 </script>
 </body>
 </html>
