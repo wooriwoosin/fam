@@ -222,7 +222,10 @@
   const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbxisKGyYyoV11Pw70RZEYfyTl99QTAY9NYjUJvT5sZNSQdoPpofTFJO8IEFD7cfIM_S/exec';
   const KEY_STORAGE = 'famTravelKey';
   const API_STORAGE = 'famTravelApi';
-  const API_TIMEOUT_MS = 120000;   // Apps Script가 오래 쉬었다 깨어나면 느릴 수 있어 넉넉히
+  const API_TIMEOUT_MS = 90000;    // 저장 요청: 넉넉히 (중복 저장 위험이 있어 자동 재시도 안 함)
+  // 불러오기('get')는 서버 처리가 1~2초라서, 구글 앞단에서 요청이 붙잡히면 기다리지 않고 새로 보냄
+  const GET_TIMEOUT_MS = 20000;
+  const GET_TRIES = 3;
 
   const store = {
     get: k => { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } },
@@ -245,7 +248,18 @@
   }
 
   // Content-Type을 지정하지 않으면 text/plain으로 보내져서 CORS 사전요청 없이 Apps Script에 전달됩니다.
-  async function api(action, extra) {
+  async function api(action, extra, onRetry) {
+    if (action !== 'get') return apiOnce(action, extra, API_TIMEOUT_MS);
+    for (let i = 1; ; i++) {
+      try { return await apiOnce(action, extra, GET_TIMEOUT_MS); }
+      catch (e) {
+        if (!['timeout', 'network'].includes(e.kind) || i >= GET_TRIES) throw e;
+        if (onRetry) onRetry(i + 1);
+      }
+    }
+  }
+
+  async function apiOnce(action, extra, timeoutMs) {
     let key = getKey();
     if (!key) {
       key = (prompt('가족 비밀번호를 입력해 주세요') || '').trim();
@@ -253,13 +267,13 @@
     }
     const started = performance.now();
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), API_TIMEOUT_MS);
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     let res, text;
     try {
       res = await fetch(getApiUrl(), { method: 'POST', body: JSON.stringify(Object.assign({ action, key }, extra)), signal: ctrl.signal });
       text = await res.text();
     } catch (e) {
-      if (e.name === 'AbortError') throw new ApiError(`서버가 ${API_TIMEOUT_MS / 1000}초 넘게 응답하지 않아요. Apps Script 편집기에서 checkSpeed를 실행해 어느 단계가 느린지 확인해 주세요.`, 'timeout');
+      if (e.name === 'AbortError') throw new ApiError(`서버가 ${timeoutMs / 1000}초 안에 응답하지 않았어요. 잠시 뒤 다시 시도해 주세요.`, 'timeout');
       throw new ApiError('웹앱에 연결하지 못했어요. 인터넷 연결을 확인하고, 배포의 액세스 권한이 "모든 사용자"인지 확인해 주세요.', 'network');
     } finally { clearTimeout(timer); }
     if (res.status === 404) throw new ApiError('웹앱 주소를 찾을 수 없어요 (404). 배포 주소가 바뀌었거나 배포가 보관처리된 것 같아요.', 'notfound');
@@ -271,7 +285,7 @@
         '. Code.gs를 붙여 넣은 뒤 "새 버전"으로 배포했는지, 액세스 권한이 "모든 사용자"인지 확인해 주세요.', 'html');
     }
     if (!body.ok) {
-      if (body.auth) { setKey(''); return api(action, extra); }
+      if (body.auth) { setKey(''); return apiOnce(action, extra, timeoutMs); }
       throw new ApiError(body.error, 'server');
     }
     setKey(key);
@@ -906,12 +920,14 @@
   function loadFresh() {
     if (DATA) setSync('최신 기록 확인 중…');
     const t0 = Date.now();
+    let attempt = 1;
     const tick = setInterval(() => {
       const sec = Math.round((Date.now() - t0) / 1000);
-      const msg = `불러오는 중… ${sec}초` + (sec >= 8 ? ' (구글 서버가 깨어나는 중일 수 있어요)' : '');
-      if (DATA) setSync(`최신 기록 확인 중… ${sec}초`); else $('loading').textContent = msg;
+      const retry = attempt > 1 ? ` · 다시 요청 ${attempt}/${GET_TRIES}` : '';
+      const msg = `불러오는 중… ${sec}초${retry}` + (sec >= 8 && attempt === 1 ? ' (구글 서버가 깨어나는 중일 수 있어요)' : '');
+      if (DATA) setSync(`최신 기록 확인 중… ${sec}초${retry}`); else $('loading').textContent = msg;
     }, 1000);
-    return api('get').finally(() => clearInterval(tick)).then(res => {
+    return api('get', null, n => { attempt = n; }).finally(() => clearInterval(tick)).then(res => {
       const first = !DATA;
       // 캐시를 보여 주는 사이에 저장한 게 있으면 그 결과가 더 최신이므로 덮지 않음
       if (!queue.length && !syncing) { DATA = res.data; renderAll(); saveLocal(); }
