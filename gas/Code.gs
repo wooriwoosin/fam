@@ -10,6 +10,9 @@
  *
  * 화면(index.html)은 GitHub Pages에 두고, 이 스크립트는 시트 저장/조회 API 역할만 합니다.
  * 처음 한 번만 편집기에서 setFamilyKey → setup 순서로 실행하세요.
+ *
+ * 속도: 시트 호출 한 번이 수십~수백 ms라서, 요청마다 여행기록을 '한 번 읽고 → 메모리에서 고치고 → 한 번에 씀'.
+ *       국가목록은 CacheService에 캐시하고, 통계 시트는 값만 한 번에 씁니다 (서식은 setup 때 한 번만).
  */
 
 const SPREADSHEET_ID = '14vG4qi62Nkl0ytk8ozNpuD75Puf9XDKjoLsFQ5E7tHA';
@@ -38,17 +41,25 @@ const COUNTRY_HEADERS = ['국가', '코드', '국기', '국기 이미지', '별�
 const DATE_FORMAT = 'yyyy.mm.dd';
 const MISSING_COLOR = '#fff4c2';
 const UNKNOWN_COLOR = '#ffd6d6';
+const COUNTRY_CACHE_KEY = 'countryRows_v1';
+
+// 통계 시트 고정 배치 (가족 수가 정해져 있어서 위치가 바뀌지 않음 → 서식은 한 번만)
+const STATS_HEADER = ['여행자', '출국 횟수', '나라 방문 횟수', '가본 나라 수', '도시 방문 횟수', '가본 도시 수',
+  '총 여행일수', '최근 출국', '나라 미입력', '가본 나라 · 도시'];
+const STATS_TABLE_ROW = 4;
+const STATS_YEAR_ROW = STATS_TABLE_ROW + FAMILY.length + 2;
 
 /* ───────────────────────── 설치 ───────────────────────── */
 
-/** 처음 한 번 실행: 시트 만들기 + 국가목록 채우기 + 자동 국기 트리거 */
+/** 처음 한 번 실행: 시트 만들기 + 국가목록 채우기 + 자동 국기 트리거 + 통계 서식 */
 function setup() {
   const ss = getSpreadsheet_();
   setupTripSheet_(ss);
   setupCountrySheet_(ss);
-  getOrCreateSheet_(ss, SHEET.STATS);
-  getOrCreateSheet_(ss, SHEET.BY_COUNTRY);
+  formatStatsSheet_(getOrCreateSheet_(ss, SHEET.STATS));
+  formatByCountrySheet_(getOrCreateSheet_(ss, SHEET.BY_COUNTRY));
   installEditTrigger_(ss);
+  CacheService.getScriptCache().remove(COUNTRY_CACHE_KEY);
   refreshAll();
 }
 
@@ -93,14 +104,43 @@ function setupCountrySheet_(ss) {
   sheet.getRange(1, 2).setNote('ISO 2자리 국가코드 (예: JP). 새 나라를 추가할 때는 국가·코드만 쓰면 국기는 자동으로 채워집니다.');
 }
 
+/** 통계 시트 서식 (setup 때 한 번만) */
+function formatStatsSheet_(sheet) {
+  sheet.clear();
+  sheet.getRange(1, 1).setFontSize(14).setFontWeight('bold');
+  sheet.getRange(2, 1).setFontColor('#666666');
+  sheet.getRange(STATS_TABLE_ROW, 1, 1, STATS_HEADER.length)
+    .setFontWeight('bold').setBackground('#1f4e79').setFontColor('#ffffff');
+  sheet.getRange(STATS_TABLE_ROW + 1, 2, FAMILY.length, 5)
+    .setFontWeight('bold').setFontSize(13).setHorizontalAlignment('center');
+  sheet.getRange(STATS_YEAR_ROW, 1).setFontWeight('bold');
+  sheet.getRange(STATS_YEAR_ROW + 1, 1, 1, FAMILY.length + 1).setFontWeight('bold').setBackground('#dbe9f6');
+  sheet.getRange(STATS_YEAR_ROW + 2, 1, 100, FAMILY.length + 1).setHorizontalAlignment('center');
+  sheet.setColumnWidth(1, 130);
+  sheet.setColumnWidths(2, 8, 95);
+  sheet.setColumnWidth(10, 700);
+}
+
+/** 나라별 시트 서식 (setup 때 한 번만) */
+function formatByCountrySheet_(sheet) {
+  sheet.clear();
+  const width = 3 + FAMILY.length + 2;
+  sheet.getRange(1, 1, 1, width).setFontWeight('bold').setBackground('#1f4e79').setFontColor('#ffffff');
+  sheet.setFrozenRows(1);
+  sheet.getRange(2, 2, 250).setFontSize(16);
+  sheet.getRange(2, 4, 250, FAMILY.length + 1).setHorizontalAlignment('center');
+  sheet.setRowHeights(2, 250, 28);
+  sheet.setColumnWidth(1, 50);
+  sheet.setColumnWidth(2, 40);
+  sheet.setColumnWidth(width, 400);
+}
+
 /** 예전 시트(방문도시·도시 수 열이 없던 버전)를 새 열 구성으로 맞춤. 여러 번 불러도 안전 */
-let tripColumnsChecked_ = false;
 function ensureTripColumns_(ss) {
-  if (tripColumnsChecked_) return;
   const sheet = ss.getSheetByName(SHEET.TRIPS);
-  if (!sheet || sheet.getLastColumn() === 0) return;
+  if (!sheet || sheet.getLastColumn() === 0) return false;
   const header = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(String);
-  if (header[0] !== 'ID') { tripColumnsChecked_ = true; return; }  // 처음 만드는 시트
+  if (header[0] !== 'ID') return false;
   let changed = false;
   TRIP_HEADERS.forEach((h, i) => {
     if (header[i] === h || ADDED_COLUMNS.indexOf(h) < 0) return;
@@ -109,27 +149,170 @@ function ensureTripColumns_(ss) {
     changed = true;
   });
   if (changed) sheet.getRange(1, 1, 1, TRIP_HEADERS.length).setValues([TRIP_HEADERS]);
-  tripColumnsChecked_ = true;
+  return changed;
+}
+
+function installEditTrigger_(ss) {
+  const exists = ScriptApp.getProjectTriggers().some(t => t.getHandlerFunction() === 'handleEdit');
+  if (!exists) ScriptApp.newTrigger('handleEdit').forSpreadsheet(ss).onEdit().create();
+}
+
+/* ───────────────────────── 여행기록 저장소 (한 번 읽고 한 번 쓰기) ───────────────────────── */
+
+/** 여행기록 시트 전체를 한 번에 읽음 → { sheet, rows: [[...11칸]], oldCount } */
+function loadStore_(ss) {
+  const sheet = ss.getSheetByName(SHEET.TRIPS);
+  if (!sheet) throw new Error('편집기에서 setup을 먼저 실행해 주세요');
+  let values = sheet.getDataRange().getValues();
+  if (values[0] && values[0][0] === 'ID' && TRIP_HEADERS.some((h, i) => values[0][i] !== h)) {
+    if (ensureTripColumns_(ss)) values = sheet.getDataRange().getValues();  // 예전 시트면 한 번만 열 추가
+  }
+  const width = TRIP_HEADERS.length;
+  const rows = values.slice(1)
+    .map(r => { const row = r.slice(0, width); while (row.length < width) row.push(''); return row; })
+    .filter(r => r.some(v => v !== '' && v !== null));
+  return { sheet: sheet, rows: rows, oldCount: Math.max(values.length - 1, 0) };
+}
+
+/**
+ * 모든 줄의 계산 칸(기간·국기·나라 수 등)을 채우고 출국일 최신순으로 정렬한 뒤 한 번에 씀.
+ * 시트 호출: 값 1번 + 배경색 1번 + 메모 1번 (+ 줄이 줄었으면 지우기 1번)
+ */
+function saveStore_(store, lookup) {
+  const width = TRIP_HEADERS.length;
+  const done = store.rows.map(r => normalizeRow_(r, lookup));
+  const time = d => { const x = parseDate_(d.values[COL.DEP - 1]); return x ? x.getTime() : 0; };
+  done.sort((a, b) => time(b) - time(a) ||
+    String(a.values[COL.PERSON - 1]).localeCompare(String(b.values[COL.PERSON - 1]), 'ko'));
+  const n = done.length;
+  const total = Math.max(n, store.oldCount);
+  if (n) store.sheet.getRange(2, 1, n, width).setValues(done.map(d => d.values));
+  if (store.oldCount > n) store.sheet.getRange(2 + n, 1, store.oldCount - n, width).clearContent();
+  if (total) {
+    const marks = store.sheet.getRange(2, COL.COUNTRIES, total, 2);
+    const pad = (arr, empty) => arr.concat(Array.from({ length: total - n }, () => empty));
+    marks.setBackgrounds(pad(done.map(d => d.backgrounds), [null, null]));
+    marks.setNotes(pad(done.map(d => d.notes), ['', '']));
+  }
+  store.rows = done.map(d => d.values);
+  store.oldCount = n;
+  return store.rows;
+}
+
+/** 한 줄(값 배열) → 계산 칸을 채운 값 + 방문국가/방문도시 칸의 배경색·메모 (시트 호출 없음) */
+function normalizeRow_(row, lookup) {
+  const v = row.slice();
+  const dep = parseDate_(v[COL.DEP - 1]);
+  const ret = parseDate_(v[COL.RET - 1]);
+  if (!v[COL.ID - 1]) v[COL.ID - 1] = newId_();
+  v[COL.PERSON - 1] = String(v[COL.PERSON - 1]).trim();
+  v[COL.DEP - 1] = dep || v[COL.DEP - 1];
+  v[COL.RET - 1] = ret || v[COL.RET - 1];
+  v[COL.DAYS - 1] = durationLabel_(dep, ret);
+
+  const parsed = parseTrip_(String(v[COL.COUNTRIES - 1]).trim(), String(v[COL.CITIES - 1]).trim(), lookup);
+  const texts = tripTexts_(parsed.countries);
+  v[COL.COUNTRIES - 1] = texts.countries;
+  v[COL.CITIES - 1] = [texts.cities].concat(parsed.unknownCities).filter(Boolean).join(', ');
+  v[COL.FLAGS - 1] = parsed.countries.map(c => c.code ? flagEmoji_(c.code) : '❓').join(' ');
+  v[COL.COUNT - 1] = parsed.countries.length || '';
+  v[COL.CITY_COUNT - 1] = countCities_(parsed.countries) || '';
+
+  let countryBg = null, countryNote = '';
+  if (parsed.unknown.length) {
+    countryBg = UNKNOWN_COLOR;
+    countryNote = '국가목록에 없는 이름: ' + parsed.unknown.join(', ') + '\n국가목록 탭에 추가하거나 별칭을 등록하세요.';
+  } else if (!parsed.countries.length) {
+    countryBg = MISSING_COLOR;
+    countryNote = '나라를 입력해 주세요';
+  }
+  let cityBg = null, cityNote = '';
+  if (parsed.unknownCities.length) {
+    cityBg = UNKNOWN_COLOR;
+    cityNote = '어느 나라 도시인지 모르겠어요: ' + parsed.unknownCities.join(', ') + '\n오사카(일본)처럼 괄호 안에 나라를 적어 주세요.';
+  }
+  return { values: v, backgrounds: [countryBg, cityBg], notes: [countryNote, cityNote], countries: parsed.countries };
+}
+
+/** 저장된 한 줄 → 화면용 여행 객체 */
+function tripFromRow_(v, lookup) {
+  const dep = parseDate_(v[COL.DEP - 1]);
+  const ret = parseDate_(v[COL.RET - 1]);
+  return {
+    id: String(v[COL.ID - 1]),
+    person: String(v[COL.PERSON - 1]).trim(),
+    dep: formatIso_(dep),
+    ret: formatIso_(ret),
+    days: dep && ret ? daysBetween_(dep, ret) + 1 : 0,
+    countries: parseTrip_(String(v[COL.COUNTRIES - 1]), String(v[COL.CITIES - 1]), lookup).countries,
+    memo: String(v[COL.MEMO - 1]),
+  };
+}
+
+function tripsFromRows_(rows, lookup) {
+  return rows.map(r => tripFromRow_(r, lookup)).filter(t => t.person)
+    .sort((a, b) => (a.dep < b.dep ? 1 : a.dep > b.dep ? -1 : 0));
+}
+
+function newRow_(fields) {
+  const row = new Array(TRIP_HEADERS.length).fill('');
+  Object.keys(fields).forEach(k => { row[COL[k] - 1] = fields[k]; });
+  return row;
+}
+
+/* ───────────────────────── 시트에서 직접 편집할 때 ───────────────────────── */
+
+/** 설치형 onEdit 트리거: 여행기록/국가목록이 바뀌면 국기·기간·통계를 다시 계산 */
+function handleEdit(e) {
+  const sheet = e.range.getSheet();
+  const name = sheet.getName();
+  const ss = sheet.getParent();
+  if (name === SHEET.COUNTRIES) {
+    CacheService.getScriptCache().remove(COUNTRY_CACHE_KEY);
+    lookupCache_ = null;
+    fillCountryFlags_(sheet);
+    refreshAll();
+  } else if (name === SHEET.TRIPS && e.range.getLastRow() > 1) {
+    if (ensureTripColumns_(ss)) { refreshAll(); return; }
+    const lookup = buildLookup_(ss);
+    const first = Math.max(2, e.range.getRow());
+    const count = e.range.getLastRow() - first + 1;
+    const range = sheet.getRange(first, 1, count, TRIP_HEADERS.length);
+    const rows = range.getValues();
+    const done = rows.map(r => r.some(v => v !== '' && v !== null) ? normalizeRow_(r, lookup) : null);
+    range.setValues(done.map((d, i) => d ? d.values : rows[i]));
+    const marks = sheet.getRange(first, COL.COUNTRIES, count, 2);
+    marks.setBackgrounds(done.map(d => d ? d.backgrounds : [null, null]));
+    marks.setNotes(done.map(d => d ? d.notes : ['', '']));
+    const store = loadStore_(ss);
+    rebuildStats_(ss, tripsFromRows_(store.rows, lookup));
+  }
+}
+
+/** 메뉴/수동 실행용: 모든 줄의 국기·기간과 통계를 새로 계산 */
+function refreshAll() {
+  const ss = getSpreadsheet_();
+  const lookup = buildLookup_(ss);
+  const store = loadStore_(ss);
+  saveStore_(store, lookup);
+  rebuildStats_(ss, tripsFromRows_(store.rows, lookup));
 }
 
 /** 메뉴: 메모에 적어 둔 도시 이름을 '방문도시' 칸으로 옮김 (목록에 있는 도시만, 나머지 메모는 그대로) */
 function moveMemoCities() {
   const ss = getSpreadsheet_();
-  ensureTripColumns_(ss);
-  const sheet = ss.getSheetByName(SHEET.TRIPS);
   const lookup = buildLookup_(ss);
+  const store = loadStore_(ss);
   let moved = 0;
-  for (let r = 2; r <= sheet.getLastRow(); r++) {
-    const memoCell = sheet.getRange(r, COL.MEMO);
-    const { found, rest } = splitMemoCities_(String(memoCell.getValue()), lookup);
-    if (!found.length) continue;
-    const citiesCell = sheet.getRange(r, COL.CITIES);
-    citiesCell.setValue([String(citiesCell.getValue()).trim()].concat(found).filter(Boolean).join(', '));
-    memoCell.setValue(rest);
-    refreshTripRow_(sheet, r, lookup);
+  store.rows.forEach(r => {
+    const { found, rest } = splitMemoCities_(String(r[COL.MEMO - 1]), lookup);
+    if (!found.length) return;
+    r[COL.CITIES - 1] = [String(r[COL.CITIES - 1]).trim()].concat(found).filter(Boolean).join(', ');
+    r[COL.MEMO - 1] = rest;
     moved += found.length;
-  }
-  rebuildStats_(ss);
+  });
+  saveStore_(store, lookup);
+  rebuildStats_(ss, tripsFromRows_(store.rows, lookup));
   const msg = '메모에서 도시 ' + moved + '개를 방문도시로 옮겼어요.';
   try { SpreadsheetApp.getUi().alert(msg); } catch (e) { Logger.log(msg); }
 }
@@ -146,39 +329,6 @@ function splitMemoCities_(memo, lookup) {
   return { found: found, rest: rest };
 }
 
-function installEditTrigger_(ss) {
-  const exists = ScriptApp.getProjectTriggers().some(t => t.getHandlerFunction() === 'handleEdit');
-  if (!exists) ScriptApp.newTrigger('handleEdit').forSpreadsheet(ss).onEdit().create();
-}
-
-/* ───────────────────────── 시트에서 직접 편집할 때 ───────────────────────── */
-
-/** 설치형 onEdit 트리거: 여행기록/국가목록이 바뀌면 국기·기간·통계를 다시 계산 */
-function handleEdit(e) {
-  const sheet = e.range.getSheet();
-  const name = sheet.getName();
-  ensureTripColumns_(sheet.getParent());
-  if (name === SHEET.COUNTRIES) {
-    fillCountryFlags_(sheet);
-    refreshAll();
-  } else if (name === SHEET.TRIPS && e.range.getLastRow() > 1) {
-    const lookup = buildLookup_(sheet.getParent());
-    const first = Math.max(2, e.range.getRow());
-    for (let r = first; r <= e.range.getLastRow(); r++) refreshTripRow_(sheet, r, lookup);
-    rebuildStats_(sheet.getParent());
-  }
-}
-
-/** 메뉴/수동 실행용: 모든 행의 국기·기간과 통계를 새로 계산 */
-function refreshAll() {
-  const ss = getSpreadsheet_();
-  ensureTripColumns_(ss);
-  const sheet = ss.getSheetByName(SHEET.TRIPS);
-  const lookup = buildLookup_(ss);
-  for (let r = 2; r <= sheet.getLastRow(); r++) refreshTripRow_(sheet, r, lookup);
-  rebuildStats_(ss);
-}
-
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('✈️ 여행기록')
     .addItem('국기·통계 새로고침', 'refreshAll')
@@ -192,64 +342,24 @@ function fillCountryFlags_(sheet) {
   if (last < 2) return;
   const range = sheet.getRange(2, 1, last - 1, 4);
   const values = range.getValues();
-  values.forEach((row, i) => {
+  let changed = false;
+  values.forEach(row => {
     const code = String(row[1]).trim().toUpperCase();
     if (!/^[A-Z]{2}$/.test(code)) return;
-    if (!row[2]) sheet.getRange(i + 2, 3).setValue(flagEmoji_(code));
-    if (!row[3]) sheet.getRange(i + 2, 4).setFormula(flagImageFormula_(code));
+    if (!row[2]) { row[2] = flagEmoji_(code); changed = true; }
+    if (!row[3]) { row[3] = flagImageFormula_(code); changed = true; }
   });
-}
-
-function refreshTripRow_(sheet, row, lookup) {
-  const range = sheet.getRange(row, 1, 1, TRIP_HEADERS.length);
-  const v = range.getValues()[0];
-  const person = String(v[COL.PERSON - 1]).trim();
-  const dep = parseDate_(v[COL.DEP - 1]);
-  const ret = parseDate_(v[COL.RET - 1]);
-  const rawCountries = String(v[COL.COUNTRIES - 1]).trim();
-  const rawCities = String(v[COL.CITIES - 1]).trim();
-
-  if (!person && !dep && !rawCountries && !rawCities) return; // 빈 줄
-
-  if (!v[COL.ID - 1]) v[COL.ID - 1] = newId_();
-  if (dep) v[COL.DEP - 1] = dep;
-  if (ret) v[COL.RET - 1] = ret;
-  v[COL.DAYS - 1] = durationLabel_(dep, ret);
-
-  const parsed = parseTrip_(rawCountries, rawCities, lookup);
-  const texts = tripTexts_(parsed.countries);
-  v[COL.COUNTRIES - 1] = texts.countries;
-  v[COL.CITIES - 1] = [texts.cities].concat(parsed.unknownCities).filter(Boolean).join(', ');
-  v[COL.FLAGS - 1] = parsed.countries.map(c => c.code ? flagEmoji_(c.code) : '❓').join(' ');
-  v[COL.COUNT - 1] = parsed.countries.length || '';
-  v[COL.CITY_COUNT - 1] = countCities_(parsed.countries) || '';
-  range.setValues([v]);
-
-  const countryCell = sheet.getRange(row, COL.COUNTRIES);
-  if (parsed.unknown.length) {
-    countryCell.setBackground(UNKNOWN_COLOR)
-      .setNote('국가목록에 없는 이름: ' + parsed.unknown.join(', ') + '\n국가목록 탭에 추가하거나 별칭을 등록하세요.');
-  } else if (!parsed.countries.length) {
-    countryCell.setBackground(MISSING_COLOR).setNote('나라를 입력해 주세요');
-  } else {
-    countryCell.setBackground(null).clearNote();
-  }
-  const cityCell = sheet.getRange(row, COL.CITIES);
-  if (parsed.unknownCities.length) {
-    cityCell.setBackground(UNKNOWN_COLOR)
-      .setNote('어느 나라 도시인지 모르겠어요: ' + parsed.unknownCities.join(', ') + '\n오사카(일본)처럼 괄호 안에 나라를 적어 주세요.');
-  } else {
-    cityCell.setBackground(null).clearNote();
-  }
+  if (changed) sheet.getRange(2, 3, values.length, 2).setValues(values.map(r => [r[2], r[3]]));
 }
 
 /* ───────────────────────── 통계 ───────────────────────── */
 
-function rebuildStats_(ss) {
-  const trips = readTrips_(ss);
+/** 통계·나라별 시트를 값만 한 번에 씀 (서식은 setup 때 한 번만 해 둠) */
+function rebuildStats_(ss, trips) {
   const stats = computeStats_(trips);
   writeStatsSheet_(ss, stats);
   writeByCountrySheet_(ss, stats);
+  return stats;
 }
 
 function computeStats_(trips) {
@@ -306,74 +416,55 @@ function cityListText_(counts) {
 
 function writeStatsSheet_(ss, stats) {
   const sheet = getOrCreateSheet_(ss, SHEET.STATS);
-  sheet.clear();
-  const header = ['여행자', '출국 횟수', '나라 방문 횟수', '가본 나라 수', '도시 방문 횟수', '가본 도시 수',
-    '총 여행일수', '최근 출국', '나라 미입력', '가본 나라 · 도시'];
-  const rows = stats.people.map(p => [
+  const width = STATS_HEADER.length;
+  const blank = () => new Array(width).fill('');
+  const line = cells => { const r = blank(); cells.forEach((v, i) => { r[i] = v; }); return r; };
+
+  const grid = [
+    line(['👨‍👩‍👧 가족 여행 통계']),
+    line(['출국 횟수 = 한국에서 나간 횟수 · 나라/도시 방문 횟수 = 한 번 나가서 여러 곳을 가면 곳마다 1회씩 · 가본 나라/도시 수 = 중복 제외']),
+    blank(),
+    STATS_HEADER.slice(),
+  ];
+  stats.people.forEach(p => grid.push([
     p.name + ' (' + p.role + ')',
-    p.departures,
-    p.countryVisits,
-    p.uniqueCountries,
-    p.cityVisits,
-    p.uniqueCities,
-    p.days,
+    p.departures, p.countryVisits, p.uniqueCountries, p.cityVisits, p.uniqueCities, p.days,
     p.lastDep ? p.lastDep.replace(/-/g, '.') : '',
     p.missing ? p.missing + '건' : '',
-    Object.keys(p.visitCount)
-      .sort((a, b) => p.visitCount[b] - p.visitCount[a])
-      .map(n => {
-        const c = stats.countries.find(x => x.name === n);
-        const cities = {};
-        Object.keys(p.cityCount).forEach(k => {
-          const m = k.match(/^(.*)\((.*)\)$/);
-          if (m && m[2] === n) cities[m[1]] = p.cityCount[k];
-        });
-        const cityText = cityListText_(cities);
-        return (c && c.code ? flagEmoji_(c.code) : '') + n + (p.visitCount[n] > 1 ? '×' + p.visitCount[n] : '') +
-          (cityText ? ' (' + cityText + ')' : '');
-      }).join('   '),
-  ]);
-  sheet.getRange(1, 1).setValue('👨‍👩‍👧 가족 여행 통계').setFontSize(14).setFontWeight('bold');
-  sheet.getRange(2, 1).setValue('출국 횟수 = 한국에서 나간 횟수 · 나라/도시 방문 횟수 = 한 번 나가서 여러 곳을 가면 곳마다 1회씩 · 가본 나라/도시 수 = 중복 제외')
-    .setFontColor('#666666');
-  sheet.getRange(4, 1, 1, header.length).setValues([header]).setFontWeight('bold').setBackground('#1f4e79').setFontColor('#ffffff');
-  sheet.getRange(5, 1, rows.length, header.length).setValues(rows);
-  sheet.getRange(5, 2, rows.length, 5).setFontWeight('bold').setFontSize(13).setHorizontalAlignment('center');
+    Object.keys(p.visitCount).sort((a, b) => p.visitCount[b] - p.visitCount[a]).map(n => {
+      const c = stats.countries.find(x => x.name === n);
+      const cities = {};
+      Object.keys(p.cityCount).forEach(k => {
+        const m = k.match(/^(.*)\((.*)\)$/);
+        if (m && m[2] === n) cities[m[1]] = p.cityCount[k];
+      });
+      const cityText = cityListText_(cities);
+      return (c && c.code ? flagEmoji_(c.code) : '') + n + (p.visitCount[n] > 1 ? '×' + p.visitCount[n] : '') +
+        (cityText ? ' (' + cityText + ')' : '');
+    }).join('   '),
+  ]));
+  grid.push(blank());
+  grid.push(line(['📅 연도별 출국 횟수']));
+  grid.push(line(['연도'].concat(FAMILY.map(f => f.name))));
+  Object.keys(stats.years).sort().reverse()
+    .forEach(y => grid.push(line([y].concat(FAMILY.map(f => stats.years[y][f.name] || '')))));
 
-  // 연도별 출국 횟수
-  const yearStart = 6 + rows.length;
-  sheet.getRange(yearStart, 1).setValue('📅 연도별 출국 횟수').setFontWeight('bold');
-  const yearHeader = ['연도'].concat(FAMILY.map(f => f.name));
-  const yearRows = Object.keys(stats.years).sort().reverse()
-    .map(y => [y].concat(FAMILY.map(f => stats.years[y][f.name] || '')));
-  sheet.getRange(yearStart + 1, 1, 1, yearHeader.length).setValues([yearHeader]).setFontWeight('bold').setBackground('#dbe9f6');
-  if (yearRows.length) {
-    sheet.getRange(yearStart + 2, 1, yearRows.length, yearHeader.length).setValues(yearRows).setHorizontalAlignment('center');
-  }
-  sheet.setColumnWidth(1, 130);
-  sheet.setColumnWidths(2, 8, 95);
-  sheet.setColumnWidth(10, 700);
+  const old = sheet.getLastRow();
+  if (old > grid.length) sheet.getRange(grid.length + 1, 1, old - grid.length, width).clearContent();
+  sheet.getRange(1, 1, grid.length, width).setValues(grid);
 }
 
 function writeByCountrySheet_(ss, stats) {
   const sheet = getOrCreateSheet_(ss, SHEET.BY_COUNTRY);
-  sheet.clear();
   const header = ['국기', '', '나라'].concat(FAMILY.map(f => f.name), ['합계', '다녀온 도시']);
-  sheet.getRange(1, 1, 1, header.length).setValues([header]).setFontWeight('bold').setBackground('#1f4e79').setFontColor('#ffffff');
-  sheet.setFrozenRows(1);
-  if (!stats.countries.length) return;
-  const rows = stats.countries.map(c => [
+  const grid = [header].concat(stats.countries.map(c => [
     c.code ? flagImageFormula_(c.code) : '',
     c.code ? flagEmoji_(c.code) : '',
     c.name,
-  ].concat(FAMILY.map(f => c.byPerson[f.name] || ''), [c.total, cityListText_(c.cities)]));
-  sheet.getRange(2, 1, rows.length, header.length).setValues(rows);
-  sheet.getRange(2, 2, rows.length).setFontSize(16);
-  sheet.getRange(2, 4, rows.length, FAMILY.length + 1).setHorizontalAlignment('center');
-  sheet.setRowHeights(2, rows.length, 28);
-  sheet.setColumnWidth(1, 50);
-  sheet.setColumnWidth(2, 40);
-  sheet.setColumnWidth(header.length, 400);
+  ].concat(FAMILY.map(f => c.byPerson[f.name] || ''), [c.total, cityListText_(c.cities)])));
+  const old = sheet.getLastRow();
+  if (old > grid.length) sheet.getRange(grid.length + 1, 1, old - grid.length, header.length).clearContent();
+  sheet.getRange(1, 1, grid.length, header.length).setValues(grid);
 }
 
 /* ───────────────────────── API (GitHub의 index.html이 호출) ───────────────────────── */
@@ -383,12 +474,12 @@ function writeByCountrySheet_(ss, stats) {
  * 모든 요청은 POST, 본문은 JSON 문자열: { action, key, ... }
  *   action: 'get' | 'add' | 'update' | 'delete' | 'import'
  * key: 가족 비밀번호 (스크립트 속성 FAMILY_KEY). 웹앱을 '모든 사용자'로 공개하므로 이걸로 막습니다.
+ * 쓰기 요청의 응답에는 국가·도시 목록을 빼고 trips/stats만 담아서 가볍게 보냅니다.
  */
 function doPost(e) {
   try {
     const req = JSON.parse((e && e.postData && e.postData.contents) || '{}');
     checkKey_(req.key);
-    ensureTripColumns_(getSpreadsheet_());
     switch (req.action) {
       case 'get': return json_({ ok: true, data: getAppData_() });
       case 'add': return json_(Object.assign({ ok: true }, addTrip_(req.trip || {})));
@@ -430,10 +521,11 @@ function setFamilyKey() {
   Logger.log('가족 비밀번호를 저장했습니다. 이제 key 값을 원래대로 되돌려도 됩니다.');
 }
 
+/** 처음 불러올 때: 가족, 국가·도시 목록, 여행, 통계 (시트 쓰기 없음) */
 function getAppData_() {
   const ss = getSpreadsheet_();
-  const trips = readTrips_(ss);
   const lookup = buildLookup_(ss);
+  const trips = tripsFromRows_(loadStore_(ss).rows, lookup);
   return {
     family: FAMILY,
     countries: lookup.list,
@@ -443,58 +535,67 @@ function getAppData_() {
   };
 }
 
+/** 쓰기 공통: 잠금 → 한 번 읽기 → change(store) → 한 번 쓰기 → 통계 시트 → 가벼운 응답 */
+function mutate_(change) {
+  return withLock_(() => {
+    const ss = getSpreadsheet_();
+    const lookup = buildLookup_(ss);
+    const store = loadStore_(ss);
+    const extra = change(store) || {};
+    saveStore_(store, lookup);
+    const trips = tripsFromRows_(store.rows, lookup);
+    const stats = rebuildStats_(ss, trips);
+    return Object.assign({ data: { trips: trips, stats: stats } }, extra);
+  });
+}
+
+function findIndexById_(store, id) {
+  const i = store.rows.findIndex(r => String(r[COL.ID - 1]) === String(id));
+  if (i < 0) throw new Error('해당 여행을 찾을 수 없어요. 새로고침 해 주세요.');
+  return i;
+}
+
+/** 화면에서 미리 만든 ID를 쓰면 저장을 기다리지 않고도 화면과 시트가 같은 ID를 가짐 */
+function safeId_(id) {
+  return /^[A-Za-z0-9_-]{4,24}$/.test(String(id || '')) ? String(id) : newId_();
+}
+
 /**
- * trip: { people: [..], dep: 'yyyy-mm-dd', ret: 'yyyy-mm-dd', countries: [{ name, cities: [..] }], memo }
+ * trip: { people: [..], ids: { 사람: id }, dep: 'yyyy-mm-dd', ret, countries: [{ name, cities: [..] }], memo }
  * countries는 예전 형식(['일본', '태국'])도 받습니다.
  */
 function addTrip_(trip) {
-  return withLock_(() => {
-    const ss = getSpreadsheet_();
-    const sheet = ss.getSheetByName(SHEET.TRIPS);
-    const people = (trip.people || []).filter(p => FAMILY.some(f => f.name === p));
-    if (!people.length) throw new Error('여행자를 선택해 주세요');
-    if (!parseDate_(trip.dep)) throw new Error('출국일을 입력해 주세요');
-    const existing = new Set(readTrips_(ss).map(t => t.person + '|' + t.dep));
+  const people = (trip.people || []).filter(p => FAMILY.some(f => f.name === p));
+  if (!people.length) throw new Error('여행자를 선택해 주세요');
+  if (!parseDate_(trip.dep)) throw new Error('출국일을 입력해 주세요');
+  return mutate_(store => {
+    const existing = new Set(store.rows.map(r => r[COL.PERSON - 1] + '|' + formatIso_(parseDate_(r[COL.DEP - 1]))));
+    const texts = requestTexts_(trip.countries);
     const skipped = [];
-    const lookup = buildLookup_(ss);
     people.forEach(person => {
       if (existing.has(person + '|' + trip.dep)) { skipped.push(person); return; }
-      const row = sheet.getLastRow() + 1;
-      const texts = requestTexts_(trip.countries);
-      const values = new Array(TRIP_HEADERS.length).fill('');
-      values[COL.ID - 1] = newId_();
-      values[COL.PERSON - 1] = person;
-      values[COL.DEP - 1] = parseDate_(trip.dep);
-      values[COL.RET - 1] = parseDate_(trip.ret) || '';
-      values[COL.COUNTRIES - 1] = texts.countries;
-      values[COL.CITIES - 1] = texts.cities;
-      values[COL.MEMO - 1] = trip.memo || '';
-      sheet.getRange(row, 1, 1, TRIP_HEADERS.length).setValues([values]);
-      refreshTripRow_(sheet, row, lookup);
+      store.rows.push(newRow_({
+        ID: safeId_((trip.ids || {})[person]), PERSON: person, DEP: parseDate_(trip.dep), RET: parseDate_(trip.ret) || '',
+        COUNTRIES: texts.countries, CITIES: texts.cities, MEMO: trip.memo || '',
+      }));
     });
-    sortTrips_(sheet);
-    rebuildStats_(ss);
-    return { data: getAppData_(), skipped: skipped };
+    return { skipped: skipped };
   });
 }
 
 /** 기존 여행 수정 (나라 채우기 등). trip: { person, dep, ret, countries, memo } */
 function updateTrip_(id, trip) {
-  return withLock_(() => {
-    const ss = getSpreadsheet_();
-    const sheet = ss.getSheetByName(SHEET.TRIPS);
-    if (!FAMILY.some(f => f.name === trip.person)) throw new Error('여행자를 선택해 주세요');
-    if (!parseDate_(trip.dep)) throw new Error('출국일을 입력해 주세요');
-    const row = findRowById_(sheet, id);
-    sheet.getRange(row, COL.PERSON, 1, 2).setValues([[trip.person, parseDate_(trip.dep)]]);
-    sheet.getRange(row, COL.RET).setValue(parseDate_(trip.ret) || '');
+  if (!FAMILY.some(f => f.name === trip.person)) throw new Error('여행자를 선택해 주세요');
+  if (!parseDate_(trip.dep)) throw new Error('출국일을 입력해 주세요');
+  return mutate_(store => {
+    const row = store.rows[findIndexById_(store, id)];
     const texts = requestTexts_(trip.countries);
-    sheet.getRange(row, COL.COUNTRIES, 1, 2).setValues([[texts.countries, texts.cities]]);
-    sheet.getRange(row, COL.MEMO).setValue(trip.memo || '');
-    refreshTripRow_(sheet, row, buildLookup_(ss));
-    sortTrips_(sheet);
-    rebuildStats_(ss);
-    return { data: getAppData_() };
+    row[COL.PERSON - 1] = trip.person;
+    row[COL.DEP - 1] = parseDate_(trip.dep);
+    row[COL.RET - 1] = parseDate_(trip.ret) || '';
+    row[COL.COUNTRIES - 1] = texts.countries;
+    row[COL.CITIES - 1] = texts.cities;
+    row[COL.MEMO - 1] = trip.memo || '';
   });
 }
 
@@ -504,86 +605,46 @@ function updateTrip_(id, trip) {
  * 같은 사람·같은 출국일이 이미 있으면 건너뜁니다.
  */
 function importTrips_(person, trips) {
-  return withLock_(() => {
-    if (!FAMILY.some(f => f.name === person)) throw new Error('누구의 증명서인지 선택해 주세요');
-    const ss = getSpreadsheet_();
-    const sheet = ss.getSheetByName(SHEET.TRIPS);
-    const existing = new Set(readTrips_(ss).map(t => t.person + '|' + t.dep));
-    const rows = [];
-    let skipped = 0;
+  if (!FAMILY.some(f => f.name === person)) throw new Error('누구의 증명서인지 선택해 주세요');
+  return mutate_(store => {
+    const existing = new Set(store.rows.map(r => r[COL.PERSON - 1] + '|' + formatIso_(parseDate_(r[COL.DEP - 1]))));
+    let added = 0, skipped = 0;
     trips.forEach(t => {
       const dep = parseDate_(t.dep);
       if (!dep) return;
       const key = person + '|' + formatIso_(dep);
       if (existing.has(key)) { skipped++; return; }
       existing.add(key);
-      const values = new Array(TRIP_HEADERS.length).fill('');
-      values[COL.ID - 1] = newId_();
-      values[COL.PERSON - 1] = person;
-      values[COL.DEP - 1] = dep;
-      values[COL.RET - 1] = parseDate_(t.ret) || '';
-      values[COL.MEMO - 1] = '출입국증명서';
-      rows.push(values);
+      store.rows.push(newRow_({ ID: newId_(), PERSON: person, DEP: dep, RET: parseDate_(t.ret) || '', MEMO: '출입국증명서' }));
+      added++;
     });
-    if (rows.length) {
-      const start = sheet.getLastRow() + 1;
-      sheet.getRange(start, 1, rows.length, TRIP_HEADERS.length).setValues(rows);
-      const lookup = buildLookup_(ss);
-      for (let r = start; r < start + rows.length; r++) refreshTripRow_(sheet, r, lookup);
-      sortTrips_(sheet);
-    }
-    rebuildStats_(ss);
-    return { data: getAppData_(), added: rows.length, skipped: skipped };
+    return { added: added, skipped: skipped };
   });
 }
 
 function deleteTrip_(id) {
-  return withLock_(() => {
-    const ss = getSpreadsheet_();
-    const sheet = ss.getSheetByName(SHEET.TRIPS);
-    sheet.deleteRow(findRowById_(sheet, id));
-    rebuildStats_(ss);
-    return { data: getAppData_() };
-  });
+  return mutate_(store => { store.rows.splice(findIndexById_(store, id), 1); });
 }
 
 /* ───────────────────────── 공통 ───────────────────────── */
 
+let spreadsheet_ = null;
 function getSpreadsheet_() {
-  return SpreadsheetApp.openById(SPREADSHEET_ID);
+  return spreadsheet_ || (spreadsheet_ = SpreadsheetApp.openById(SPREADSHEET_ID));
 }
 
 function getOrCreateSheet_(ss, name) {
   return ss.getSheetByName(name) || ss.insertSheet(name);
 }
 
-function readTrips_(ss) {
-  const sheet = ss.getSheetByName(SHEET.TRIPS);
-  if (!sheet || sheet.getLastRow() < 2) return [];
-  const lookup = buildLookup_(ss);
-  return sheet.getRange(2, 1, sheet.getLastRow() - 1, TRIP_HEADERS.length).getValues()
-    .map(v => {
-      const dep = parseDate_(v[COL.DEP - 1]);
-      const ret = parseDate_(v[COL.RET - 1]);
-      return {
-        id: String(v[COL.ID - 1]),
-        person: String(v[COL.PERSON - 1]).trim(),
-        dep: formatIso_(dep),
-        ret: formatIso_(ret),
-        days: dep && ret ? daysBetween_(dep, ret) + 1 : 0,
-        countries: parseTrip_(String(v[COL.COUNTRIES - 1]), String(v[COL.CITIES - 1]), lookup).countries,
-        memo: String(v[COL.MEMO - 1]),
-      };
-    })
-    .filter(t => t.person)
-    .sort((a, b) => (a.dep < b.dep ? 1 : a.dep > b.dep ? -1 : 0));
-}
-
 /**
  * 국가목록 시트 + CITY_DATA → 이름으로 찾는 표
  *  countryByKey: 나라 이름·코드 / aliasByKey: 별칭 / cityByKey: 도시 → { name, country, code }
+ * 국가목록 시트 내용은 CacheService에 6시간 캐시 (국가목록을 고치면 handleEdit이 캐시를 지움)
  */
+let lookupCache_ = null;
 function buildLookup_(ss) {
+  if (lookupCache_) return lookupCache_;
   const countryByKey = {};
   const aliasByKey = {};
   const byCode = {};
@@ -598,12 +659,7 @@ function buildLookup_(ss) {
     if (entry.code && !byCode[entry.code]) { byCode[entry.code] = entry; countryByKey[normKey_(entry.code)] = countryByKey[normKey_(entry.code)] || entry; }
     aliases.forEach(k => { if (k && !aliasByKey[normKey_(k)]) aliasByKey[normKey_(k)] = entry; });
   };
-  const sheet = ss.getSheetByName(SHEET.COUNTRIES);
-  if (sheet && sheet.getLastRow() > 1) {
-    sheet.getRange(2, 1, sheet.getLastRow() - 1, 5).getValues().forEach(r => {
-      add(r[0], r[1], String(r[4]).split('|').map(s => s.trim()).filter(Boolean));
-    });
-  }
+  readCountryRows_(ss).forEach(r => add(r[0], r[1], String(r[2]).split('|').map(s => s.trim()).filter(Boolean)));
   // 시트가 비었거나 지워진 경우 대비 기본 목록
   COUNTRY_DATA.forEach(line => {
     const [code, names] = line.split(':');
@@ -620,7 +676,21 @@ function buildLookup_(ss) {
       if (!cityByKey[k]) cityByKey[k] = { name: city, country: country.name, code: country.code };
     });
   });
-  return { countryByKey: countryByKey, aliasByKey: aliasByKey, cityByKey: cityByKey, list: list };
+  lookupCache_ = { countryByKey: countryByKey, aliasByKey: aliasByKey, cityByKey: cityByKey, list: list };
+  return lookupCache_;
+}
+
+/** 국가목록 시트의 [국가, 코드, 별칭] 목록 (캐시 우선) */
+function readCountryRows_(ss) {
+  const cache = CacheService.getScriptCache();
+  const hit = cache.get(COUNTRY_CACHE_KEY);
+  if (hit) return JSON.parse(hit);
+  const sheet = ss.getSheetByName(SHEET.COUNTRIES);
+  const rows = sheet && sheet.getLastRow() > 1
+    ? sheet.getRange(2, 1, sheet.getLastRow() - 1, 5).getValues().map(r => [String(r[0]), String(r[1]), String(r[4])])
+    : [];
+  try { cache.put(COUNTRY_CACHE_KEY, JSON.stringify(rows), 6 * 60 * 60); } catch (e) { /* 너무 크면 캐시 없이 */ }
+  return rows;
 }
 
 /** Countries.gs의 도시 목록. 예전 Countries.gs라서 없으면 빈 목록으로 동작 (도시 자동완성만 빠짐) */
@@ -740,20 +810,6 @@ function durationLabel_(dep, ret) {
 
 function newId_() {
   return Utilities.getUuid().slice(0, 8);
-}
-
-function findRowById_(sheet, id) {
-  const ids = sheet.getRange(2, COL.ID, Math.max(sheet.getLastRow() - 1, 1)).getValues();
-  const i = ids.findIndex(r => String(r[0]) === String(id));
-  if (i < 0) throw new Error('해당 여행을 찾을 수 없어요. 새로고침 해 주세요.');
-  return i + 2;
-}
-
-/** 출국일 최신순 정렬 */
-function sortTrips_(sheet) {
-  if (sheet.getLastRow() < 3) return;
-  sheet.getRange(2, 1, sheet.getLastRow() - 1, TRIP_HEADERS.length)
-    .sort([{ column: COL.DEP, ascending: false }, { column: COL.PERSON, ascending: true }]);
 }
 
 function withLock_(fn) {

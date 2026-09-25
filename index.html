@@ -89,12 +89,13 @@
   .tag.dup { background: #eef1f6; color: var(--muted); }
   .tag.warn { background: #ffe1e1; color: var(--danger); }
   .privacy { background: #f0f5ff; border-radius: 10px; padding: 10px 12px; font-size: 13px; color: #34405a; margin-bottom: 4px; }
+  #sync { font-size: 12px; font-weight: 400; opacity: .85; margin-left: 6px; vertical-align: middle; }
   .loading { text-align: center; color: var(--muted); padding: 40px 0; }
 </style>
 </head>
 <body>
 <header>
-  <h1>✈️ 우리 가족 여행기록</h1>
+  <h1>✈️ 우리 가족 여행기록 <span id="sync"></span></h1>
   <nav>
     <button data-tab="stats" class="on">통계</button>
     <button data-tab="trips">여행 목록</button>
@@ -422,33 +423,127 @@
 
   $('cancelBtn').onclick = () => showTab('trips');
 
-  $('saveBtn').onclick = async () => {
+  // 저장: 화면에 바로 반영하고, 시트 저장은 뒤에서 순서대로 (sync 대기열)
+  $('saveBtn').onclick = () => {
     if ($('countryInput').value.trim()) addCountryFromInput();
     // 도시 입력칸에 쓰다 만 글자도 저장
     $('picked').querySelectorAll('input[data-i]').forEach(inp => { if (inp.value.trim()) addCitiesToCountry(Number(inp.dataset.i), inp.value); });
     const people = [...pickedPeople];
     if (!people.length) return toast('누가 갔는지 선택해 주세요');
     if (!$('dep').value) return toast('출국일을 입력해 주세요');
+    const countries = pickedCountries.map(c => ({ name: c.name, code: c.code, cities: c.cities.slice() }));
     const payload = { people, person: people[0], dep: $('dep').value, ret: $('ret').value,
-                      countries: pickedCountries.map(c => ({ name: c.name, cities: c.cities })), memo: $('memo').value.trim() };
-    $('saveBtn').disabled = true;
-    try {
-      const res = editingId ? await api('update', { id: editingId, trip: payload }) : await api('add', { trip: payload });
-      DATA = res.data; renderAll();
-      if (res.skipped && res.skipped.length) toast(`${res.skipped.join(', ')}: 같은 출국일 기록이 이미 있어서 건너뛰었어요`);
-      else toast('저장했어요 ✈️');
-      showTab(editingId ? 'trips' : 'stats');
-      resetForm();
-    } catch (e) { toast('오류: ' + e.message); }
-    finally { $('saveBtn').disabled = false; }
+                      countries: countries.map(c => ({ name: c.name, cities: c.cities })), memo: $('memo').value.trim() };
+    const base = { dep: payload.dep, ret: payload.ret, days: tripDays(payload.dep, payload.ret), countries, memo: payload.memo };
+    if (editingId) {
+      const t = DATA.trips.find(x => x.id === editingId);
+      if (t) Object.assign(t, base, { person: payload.person });
+      enqueue('update', { id: editingId, trip: payload });
+      afterLocalChange(); toast('저장했어요 ✈️'); showTab('trips');
+    } else {
+      const skipped = people.filter(p => DATA.trips.some(t => t.person === p && t.dep === payload.dep));
+      const ids = {};
+      people.filter(p => skipped.indexOf(p) < 0).forEach(p => {
+        ids[p] = newId();
+        DATA.trips.push(Object.assign({ id: ids[p], person: p }, base, { countries: countries.map(c => Object.assign({}, c, { cities: c.cities.slice() })) }));
+      });
+      if (Object.keys(ids).length) enqueue('add', { trip: Object.assign({ ids }, payload) });
+      afterLocalChange();
+      toast(skipped.length ? `${skipped.join(', ')}: 같은 출국일 기록이 이미 있어서 건너뛰었어요` : '저장했어요 ✈️');
+      showTab('stats');
+    }
+    resetForm();
   };
 
-  $('deleteBtn').onclick = async () => {
+  $('deleteBtn').onclick = () => {
     if (!editingId || !confirm('이 여행 기록을 삭제할까요?')) return;
-    try { DATA = (await api('delete', { id: editingId })).data; renderAll(); toast('삭제했어요'); showTab('trips'); resetForm(); }
-    catch (e) { toast('오류: ' + e.message); }
+    DATA.trips = DATA.trips.filter(t => t.id !== editingId);
+    enqueue('delete', { id: editingId });
+    afterLocalChange(); toast('삭제했어요'); showTab('trips'); resetForm();
   };
 
+  /* ── 빠르게: 저장 대기열 + 기기 캐시 ──
+     - 저장/수정/삭제는 화면에 먼저 반영하고, 서버(시트) 저장은 뒤에서 순서대로 보냄
+     - 마지막으로 받은 데이터를 기기에 저장해 두고, 다음에 열 때 바로 보여 준 뒤 최신으로 바꿈 */
+  const DATA_STORAGE = 'famTravelData_v2';
+  const queue = [];
+  let syncing = false;
+
+  function newId() { return Math.random().toString(16).slice(2, 10).padEnd(8, '0'); }
+  function tripDays(dep, ret) { return dep && ret ? Math.round((Date.parse(ret) - Date.parse(dep)) / 86400000) + 1 : 0; }
+  function saveLocal() { try { localStorage.setItem(DATA_STORAGE, JSON.stringify(DATA)); } catch (e) {} }
+  function loadLocal() { try { return JSON.parse(localStorage.getItem(DATA_STORAGE) || 'null'); } catch (e) { return null; } }
+
+  function afterLocalChange() {
+    DATA.trips.sort((a, b) => (a.dep < b.dep ? 1 : a.dep > b.dep ? -1 : a.person.localeCompare(b.person, 'ko')));
+    DATA.stats = computeStats(DATA.trips);
+    renderAll(); saveLocal();
+  }
+
+  function setSync(text) { $('sync').textContent = text; }
+  function enqueue(action, extra) {
+    queue.push({ action, extra });
+    setSync(`저장 중… (${queue.length})`);
+    runQueue();
+  }
+  async function runQueue() {
+    if (syncing) return;
+    syncing = true;
+    while (queue.length) {
+      try {
+        const res = await api(queue[0].action, queue[0].extra);
+        queue.shift();
+        // 대기 중인 저장이 없을 때만 서버 결과로 맞춤 (그 사이 화면에서 바꾼 내용을 덮지 않도록)
+        if (!queue.length && res.data) { mergeData(res.data); renderAll(); saveLocal(); }
+        setSync(queue.length ? `저장 중… (${queue.length})` : '✓ 저장됨');
+      } catch (e) {
+        queue.length = 0;
+        setSync('⚠️ 저장 실패');
+        toast('시트 저장 실패: ' + e.message + ' — 최신 기록을 다시 불러올게요');
+        try { mergeData((await api('get')).data); renderAll(); saveLocal(); } catch (_) {}
+      }
+    }
+    syncing = false;
+    setTimeout(() => { if (!queue.length && $('sync').textContent === '✓ 저장됨') setSync(''); }, 2500);
+  }
+  function mergeData(d) { DATA = Object.assign({}, DATA || {}, d); }
+  window.addEventListener('beforeunload', e => { if (queue.length || syncing) { e.preventDefault(); e.returnValue = ''; } });
+
+  /** 서버 computeStats_와 같은 계산 (화면에서 바로 통계를 보여 주려고) */
+  function computeStats(trips) {
+    const people = DATA.family.map(f => {
+      const mine = trips.filter(t => t.person === f.name);
+      const visitCount = {}, cityCount = {};
+      mine.forEach(t => t.countries.forEach(c => {
+        visitCount[c.name] = (visitCount[c.name] || 0) + 1;
+        c.cities.forEach(city => { const k = city + '(' + c.name + ')'; cityCount[k] = (cityCount[k] || 0) + 1; });
+      }));
+      const nCities = t => t.countries.reduce((n, c) => n + c.cities.length, 0);
+      return {
+        name: f.name, role: f.role,
+        departures: mine.length,
+        countryVisits: mine.reduce((s, t) => s + t.countries.length, 0),
+        uniqueCountries: Object.keys(visitCount).length,
+        cityVisits: mine.reduce((s, t) => s + nCities(t), 0),
+        uniqueCities: Object.keys(cityCount).length,
+        days: mine.reduce((s, t) => s + (t.days || 0), 0),
+        missing: mine.filter(t => !t.countries.length).length,
+        lastDep: mine.reduce((m, t) => (t.dep > m ? t.dep : m), ''),
+        visitCount, cityCount,
+      };
+    });
+    const map = {};
+    trips.forEach(t => t.countries.forEach(c => {
+      const e = map[c.name] || (map[c.name] = { name: c.name, code: c.code, total: 0, byPerson: {}, cities: {} });
+      e.total++;
+      e.byPerson[t.person] = (e.byPerson[t.person] || 0) + 1;
+      c.cities.forEach(city => { e.cities[city] = (e.cities[city] || 0) + 1; });
+    }));
+    const countries = Object.values(map).sort((a, b) => b.total - a.total || a.name.localeCompare(b.name, 'ko'));
+    const years = {};
+    trips.forEach(t => { if (!t.dep) return; const y = t.dep.slice(0, 4); years[y] = years[y] || {}; years[y][t.person] = (years[y][t.person] || 0) + 1; });
+    return { people, countries, years };
+  }
 
   /* ── 출입국증명서 불러오기 ──
      PDF에 글자 정보가 있으면 그대로 읽고, 스캔본이면 브라우저 안에서 OCR(Tesseract)로 읽습니다.
@@ -687,7 +782,7 @@
     $('certSave').disabled = true;
     try {
       const res = await api('import', { person: certPerson, trips: rows });
-      DATA = res.data; renderAll();
+      mergeData(res.data); renderAll(); saveLocal();
       toast(`${res.added}건 저장했어요` + (res.skipped ? ` (이미 있던 ${res.skipped}건은 건너뜀)` : '') + '. 이제 나라를 채워 주세요!');
       filterPerson = certPerson; certRows = [];
       $('certResult').classList.add('hidden'); $('certDropText').textContent = '여기를 눌러 파일 선택 (또는 끌어다 놓기)';
@@ -697,18 +792,36 @@
     finally { $('certSave').disabled = false; }
   };
 
+  // 나라·도시 자동완성 목록은 크기가 커서 목록이 바뀔 때만 다시 만듦
+  let countryListFor = null;
   function renderAll() {
+    if (countryListFor !== DATA.countries) { countryListFor = DATA.countries; renderCountryList(); }
+    renderStats(); renderTrips(); renderPeoplePick(); renderCertPerson();
+  }
+  function renderCountryList() {
     $('countryList').innerHTML = DATA.countries.map(c => `<option value="${esc(c.name)}">`).join('') +
       Object.keys(DATA.cities || {}).map(code => {
         const country = DATA.countries.find(c => c.code === code);
         return country ? DATA.cities[code].map(city => `<option value="${esc(city)}" label="${esc(country.name)}">`).join('') : '';
       }).join('');
-    renderStats(); renderTrips(); renderPeoplePick(); renderCertPerson();
   }
 
+  // 1) 기기에 저장된 지난 데이터를 바로 보여 주고  2) 서버에서 최신 데이터를 받아 바꿈
+  const cached = loadLocal();
+  if (cached && cached.family && cached.trips) {
+    DATA = cached; $('loading').classList.add('hidden'); renderAll(); resetForm(); showTab('stats');
+    setSync('최신 기록 확인 중…');
+  }
   api('get').then(res => {
-    DATA = res.data; $('loading').classList.add('hidden'); renderAll(); resetForm(); showTab('stats');
-  }).catch(e => { $('loading').textContent = '불러오기 실패: ' + e.message + ' — 새로고침 해 주세요'; });
+    const first = !DATA;
+    // 캐시를 보여 주는 사이에 저장한 게 있으면 그 결과가 더 최신이므로 덮지 않음
+    if (!queue.length && !syncing) { DATA = res.data; renderAll(); saveLocal(); }
+    if (first) { $('loading').classList.add('hidden'); resetForm(); showTab('stats'); }
+    if (!queue.length && !syncing) setSync('');
+  }).catch(e => {
+    if (DATA) { setSync('⚠️ 최신 기록을 못 불러왔어요'); toast('불러오기 실패: ' + e.message); }
+    else $('loading').textContent = '불러오기 실패: ' + e.message + ' — 새로고침 해 주세요';
+  });
 </script>
 </body>
 </html>
