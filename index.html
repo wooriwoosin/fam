@@ -189,7 +189,8 @@
       <div class="filters" id="peoplePick"></div>
       <div class="row2">
         <div><label>출국일</label><input type="date" id="dep"></div>
-        <div><label>입국일</label><input type="date" id="ret"></div>
+        <div><label>입국일</label><input type="date" id="ret">
+          <div id="retHint" class="note hidden" style="color:var(--accent);margin-top:4px">출국일로 맞췄어요 · 입국일을 골라 주세요</div></div>
       </div>
       <label>다녀온 나라 · 도시 (나라를 추가한 뒤, 나라마다 도시를 넣어 주세요)</label>
       <input type="text" id="countryInput" list="countryList" placeholder="나라 또는 도시 입력 후 Enter (예: 일본, 오사카, 다낭)">
@@ -598,7 +599,7 @@
     $('formTitle').textContent = '여행 추가';
     $('peopleHint').classList.remove('hidden');
     $('cancelBtn').classList.add('hidden'); $('deleteBtn').classList.add('hidden');
-    renderPeoplePick(); renderPicked(); updatePlanHint();
+    renderPeoplePick(); renderPicked(); updatePlanHint(); syncRetWithDep(false); $('retHint').classList.add('hidden');
   }
 
   function editTrip(id) {
@@ -610,15 +611,28 @@
     $('formTitle').textContent = '여행 수정';
     $('peopleHint').classList.add('hidden');
     $('cancelBtn').classList.remove('hidden'); $('deleteBtn').classList.remove('hidden');
-    renderPeoplePick(); renderPicked(); updatePlanHint();
+    renderPeoplePick(); renderPicked(); updatePlanHint(); syncRetWithDep(false); $('retHint').classList.add('hidden');
     showTab('form');
     $('countryInput').focus();
   }
 
   $('cancelBtn').onclick = () => showTab('trips');
+  /**
+   * 출국일을 고르면 입국일 달력은 출국일부터 고를 수 있게 하고(그 전 날짜는 막음),
+   * 입국일이 비었거나 출국일보다 앞이면 출국일로 맞춰서 달력이 그 달에서 열리게 함.
+   * 자동으로 채운 입국일은 사용자가 확인할 때까지 '날짜 확인해 주세요' 표시.
+   */
+  function syncRetWithDep(auto) {
+    const dep = $('dep').value;
+    $('ret').min = dep || '';
+    if (auto && dep && (!$('ret').value || $('ret').value < dep)) {
+      $('ret').value = dep;
+      $('retHint').classList.remove('hidden');
+    }
+  }
   const updatePlanHint = () => $('planHint').classList.toggle('hidden', !($('dep').value && $('dep').value > todayIso()));
-  $('dep').addEventListener('input', updatePlanHint);
-  $('dep').addEventListener('change', updatePlanHint);
+  ['input', 'change'].forEach(ev => $('dep').addEventListener(ev, () => { syncRetWithDep(true); updatePlanHint(); }));
+  ['input', 'change'].forEach(ev => $('ret').addEventListener(ev, () => $('retHint').classList.add('hidden')));
 
   // 저장: 화면에 바로 반영하고, 시트 저장은 뒤에서 순서대로 (sync 대기열)
   $('saveBtn').onclick = () => {
@@ -628,6 +642,7 @@
     const people = [...pickedPeople];
     if (!people.length) return toast('누가 갔는지 선택해 주세요');
     if (!$('dep').value) return toast('출국일을 입력해 주세요');
+    if ($('ret').value && $('ret').value < $('dep').value) return toast('입국일이 출국일보다 빨라요');
     const countries = pickedCountries.map(c => ({ name: c.name, code: c.code, cities: c.cities.slice() }));
     const payload = { people, person: people[0], dep: $('dep').value, ret: $('ret').value,
                       countries: countries.map(c => ({ name: c.name, cities: c.cities })), memo: $('memo').value.trim() };
@@ -992,7 +1007,7 @@
     $('certTable').innerHTML = `<tr><th>출국일</th><th>입국일</th><th></th><th></th></tr>` +
       certRows.map((r, i) => `<tr${statuses[i][0] === 'warn' ? ' style="background:#fff5f5"' : ''}>
         <td><input type="date" data-i="${i}" data-k="dep" value="${esc(r.dep)}"></td>
-        <td><input type="date" data-i="${i}" data-k="ret" value="${esc(r.ret)}"></td>
+        <td><input type="date" data-i="${i}" data-k="ret" value="${esc(r.ret)}" min="${esc(r.dep)}"></td>
         <td><span class="tag ${statuses[i][0]}">${{ new: '새로', dup: '있음', warn: '⚠️' }[statuses[i][0]]}</span></td>
         <td><button class="delx" data-del="${i}" title="이 줄 지우기">✕</button></td></tr>` +
         (statuses[i][0] === 'warn' ? `<tr class="warnrow"><td colspan="4"><span class="tag warn">${statuses[i][1]} — 증명서와 비교해 고쳐 주세요</span></td></tr>` : '')).join('');
