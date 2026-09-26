@@ -551,14 +551,19 @@ function doGet(e) {
 }
 
 function handle_(raw) {
+  const started = Date.now();
+  let action = '?';
   try {
     const req = JSON.parse(raw);
+    action = req.action;
     checkKey_(req.key);
     switch (req.action) {
       case 'get': {
         const timing = startTiming_();
         const data = getAppDataJson_(timing);
-        return jsonText_('{"ok":true,"timing":' + JSON.stringify(timing.done()) + ',"data":' + data + '}');
+        const t = timing.done();
+        console.log('[여행기록] get ' + JSON.stringify(t));   // 실행 목록 → 줄 클릭 → 로그에서 단계별 시간 확인
+        return jsonText_('{"ok":true,"timing":' + JSON.stringify(t) + ',"data":' + data + '}');
       }
       case 'ping': return json_({ ok: true, now: Date.now() });   // 구글 서버 깨우기/연결 확인용 (시트 안 읽음)
       case 'add': return json_(Object.assign({ ok: true }, addTrip_(req.trip || {})));
@@ -568,6 +573,7 @@ function handle_(raw) {
       default: throw new Error('알 수 없는 요청: ' + req.action);
     }
   } catch (err) {
+    console.error('[여행기록] ' + action + ' 실패 (' + (Date.now() - started) + 'ms): ' + err.message);
     // 잠금 대기 초과·구글 서비스 일시 오류는 화면이 잠시 뒤 자동으로 다시 보냄
     const retry = err.name === 'BusyError' ||
       /Lock|잠금|Service|서비스|timed out|시간 초과|Exceeded|초과|try again|다시 시도|INTERNAL/i.test(err.message);
@@ -711,14 +717,22 @@ function snapshotGet_() {
 /** 쓰기 공통: 잠금 → 한 번 읽기 → change(store) → 한 번 쓰기 → 통계 시트 → 가벼운 응답 */
 function mutate_(change) {
   return withLock_(() => {
+    let t0 = Date.now();
     const ss = getSpreadsheet_();
     const lookup = buildLookup_(ss);
     const store = loadStore_(ss);
+    const readMs = Date.now() - t0;
     const extra = change(store) || {};
+    t0 = Date.now();
     saveStore_(store, lookup);
+    const writeMs = Date.now() - t0;
+    const t = startTiming_();
     const trips = tripsFromRows_(store.rows, lookup);
     const stats = rebuildStats_(ss, trips);
+    t.step('stats');
     cacheAppData_(lookup, trips, stats);
+    t.step('cache');
+    console.log('[여행기록] 저장 ' + JSON.stringify(Object.assign({ read: readMs, write: writeMs }, t.done())));
     return Object.assign({ data: { trips: trips, stats: stats } }, extra);
   });
 }

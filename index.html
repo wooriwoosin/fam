@@ -293,12 +293,13 @@
   async function send(transport, payload, timeoutMs) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    const t0 = performance.now();
     try {
       const url = getApiUrl();
       const res = transport === 'get'
         ? await fetch(url + (url.includes('?') ? '&' : '?') + 'p=' + encodeURIComponent(payload), { credentials: 'omit', signal: ctrl.signal })
         : await fetch(url, { method: 'POST', body: payload, credentials: 'omit', signal: ctrl.signal });
-      return { res, text: await res.text() };
+      return { res, text: await res.text(), sec: Math.round((performance.now() - t0) / 1000) };
     } catch (e) {
       if (e.name === 'AbortError') throw new ApiError(`서버가 ${timeoutMs / 1000}초 안에 응답하지 않았어요. 잠시 뒤 다시 시도해 주세요.`, 'timeout');
       throw new ApiError('웹앱에 연결하지 못했어요. 인터넷 연결을 확인하고, 배포의 액세스 권한이 "모든 사용자"인지 확인해 주세요.', 'network');
@@ -351,18 +352,24 @@
     const payload = JSON.stringify(Object.assign({ action, key }, extra));
     // 기본은 POST. POST가 404면 같은 요청을 GET(?p=…)으로 보내 보고, 되면 이 기기에서는 계속 GET 사용
     let transport = store.get(TRANSPORT_STORAGE) === 'get' ? 'get' : 'post';
-    let { res, text } = await send(transport, payload, timeoutMs);
-    if (res.status === 404 && transport === 'post') {
+    let { res, text, sec } = await send(transport, payload, timeoutMs);
+    const hostOf = r => { try { return new URL(r.url).host; } catch (e) { return ''; } };
+    if (res.status === 404 && transport === 'post' && !/googleusercontent/.test(hostOf(res))) {
       const retry = await send('get', payload, timeoutMs);
       if (retry.res.status !== 404) {
         store.set(TRANSPORT_STORAGE, 'get');
         console.info('[여행기록] POST가 404라서 GET 방식으로 전환');
-        ({ res, text } = retry);
+        ({ res, text, sec } = retry);
         transport = 'get';
       }
     }
     if (res.status === 404) {
       const where = (() => { try { return new URL(res.url).host; } catch (e) { return '?'; } })();
+      // 스크립트까지는 도착했는데, 구글이 결과를 돌려주는 마지막 단계(googleusercontent)에서 404
+      // → 대개 실행이 오래 걸려 구글이 응답 전달을 포기한 것. 주소·권한 문제가 아니므로 일시 오류로 처리
+      if (/googleusercontent/.test(where)) {
+        throw new ApiError(`구글 서버가 결과를 전달하지 못했어요 (${sec}초 뒤 404). 잠시 뒤 다시 불러올게요.`, 'transient');
+      }
       const custom = store.get(API_STORAGE) ? ' · ⚙️ 설정에 직접 넣은 주소 사용 중' : '';
       throw new ApiError(`웹앱을 열 수 없어요 (404, ${where}${custom}). ① 배포 관리에서 액세스 권한이 "모든 사용자"인지 ② 웹앱 주소가 바뀌지 않았는지 확인해 주세요. ` +
         `사용 중인 주소 끝자리: …${getApiUrl().slice(-14)}`, 'notfound');
@@ -702,7 +709,11 @@
     $('sync').textContent = text;
     $('sync').classList.toggle('clickable', !!clickable);
   }
-  $('sync').onclick = () => { if (retryWake) retryWake(); };   // '다시 시도' 누르면 기다리지 않고 바로
+  // 제목 옆 표시: 저장 대기 중이면 바로 다시 저장, 불러오기 실패 상태면 다시 불러오기
+  $('sync').onclick = () => {
+    if (retryWake) return retryWake();
+    if ($('sync').textContent.includes('못 불러왔어요')) { clearTimeout(loadRetryTimer); loadFresh(); }
+  };
   function enqueue(action, extra) {
     queue.push({ action, extra });
     saveQueue();
@@ -1093,11 +1104,16 @@
     closeSettings(); loadFresh();
   };
 
+  let loadRetryTimer = null;
   function showLoadError(e) {
-    const fixable = ['notfound', 'html', 'network'].indexOf(e.kind) >= 0;
+    const fixable = ['notfound', 'html'].indexOf(e.kind) >= 0;   // 주소·배포 설정 문제일 때만 설정 창
+    console.warn('[여행기록] 불러오기 실패', e.kind, e.message);
     if (DATA) {
-      setSync('⚠️ 최신 기록을 못 불러왔어요');
-      if (fixable) openSettings(e.message); else toast('불러오기 실패: ' + e.message);
+      // 기기에 저장된 기록은 그대로 보여 주고, 제목 옆 표시를 누르거나 1분 뒤 자동으로 다시 불러옴
+      setSync('⚠️ 최신 기록을 못 불러왔어요 · 누르면 다시', true);
+      if (fixable) openSettings(e.message);
+      clearTimeout(loadRetryTimer);
+      loadRetryTimer = setTimeout(() => { if (!queue.length && !syncing) loadFresh(); }, 60000);
     } else {
       $('loading').innerHTML = `<div class="card" style="text-align:left">⚠️ 불러오기 실패<div class="note" style="font-size:14px">${esc(e.message)}</div>
         <div class="actions"><button class="btn" id="retryBtn">다시 시도</button><button class="btn ghost" id="fixBtn">웹앱 주소 바꾸기</button></div></div>`;
