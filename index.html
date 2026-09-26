@@ -112,6 +112,20 @@
   #setBtn { float: right; border: 0; background: none; font-size: 18px; cursor: pointer; padding: 0 2px; }
   #sync.clickable { cursor: pointer; text-decoration: underline; }
   #sync { font-size: 12px; font-weight: 400; opacity: .85; margin-left: 6px; vertical-align: middle; }
+  .upcoming h3 { margin: 0 0 8px; }
+  .up { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); cursor: pointer; }
+  .up:first-of-type { border-top: 0; }
+  .dday { font-weight: 700; color: var(--accent); min-width: 58px; font-size: 15px; }
+  .dday.now { color: #1e7b3a; }
+  .up .when { font-size: 14px; }
+  .up .flags { justify-content: flex-end; }
+  @media (max-width: 599px) {
+    .up { flex-wrap: wrap; row-gap: 6px; }
+    .up .flags { flex-basis: 100%; justify-content: flex-start; padding-left: 68px; }
+  }
+  .tag.plan { background: var(--accent-soft); color: var(--accent); }
+  .trip.planned { background: #f5f8ff; margin: 0 -16px; padding: 12px 16px; }
+  .sectionhead { font-size: 13px; color: var(--muted); font-weight: 600; margin: 4px 0 2px; }
   .loading { text-align: center; color: var(--muted); padding: 40px 0; }
 </style>
 </head>
@@ -147,6 +161,7 @@
 
   <!-- 통계 -->
   <section id="tab-stats" class="hidden">
+    <div id="upcoming" class="card upcoming hidden"></div>
     <div id="people" class="grid"></div>
     <div class="tables">
       <div class="card">
@@ -181,7 +196,9 @@
       <datalist id="countryList"></datalist>
       <div class="flags picked" id="picked"></div>
       <label>메모</label>
-      <input type="text" id="memo" placeholder="예: 가족여행, 출장">
+      <input type="text" id="memo" placeholder="예: 가족여행, 대한항공 KE123">
+      <div id="planHint" class="privacy hidden" style="margin-top:12px">🗓️ 출국일이 오늘 이후라 <b>예정 여행</b>으로 저장돼요.
+        출국일이 되면 자동으로 여행 기록과 통계에 들어가요.</div>
       <div class="actions">
         <button class="btn" id="saveBtn">저장</button>
         <button class="btn ghost hidden" id="cancelBtn">취소</button>
@@ -425,6 +442,18 @@
   function renderStats() {
     const s = DATA.stats;
     const byName = {}; s.countries.forEach(c => byName[c.name] = c);
+    const ups = upcomingGroups(DATA.trips);
+    $('upcoming').classList.toggle('hidden', !ups.length);
+    $('upcoming').innerHTML = `<h3>🗓️ 다가오는 여행</h3>` + ups.map(g => `
+      <div class="up" data-id="${esc(g.ids[0])}">
+        <div class="dday">${dday(g.dep)}</div>
+        <div style="flex:1">
+          <div class="when">${dot(g.dep)} ~ ${dot(g.ret).slice(5) || '?'} ${g.days ? `<span class="who">(${g.days - 1}박${g.days}일)</span>` : ''}</div>
+          <div class="who">${g.people.map(esc).join(', ')}${g.memo ? ' · ' + esc(g.memo) : ''}</div>
+        </div>
+        <div class="flags">${g.countries.map(c => `<span>${chip(c)} ${cityLine(c.cities)}</span>`).join('') || '<span class="note">나라 미정</span>'}</div>
+      </div>`).join('');
+    $('upcoming').querySelectorAll('.up').forEach(el => el.onclick = () => editTrip(el.dataset.id));
     $('people').innerHTML = s.people.map(p => {
       const visited = Object.keys(p.visitCount).sort((a, b) => p.visitCount[b] - p.visitCount[a]);
       return `<div class="card person">
@@ -441,6 +470,7 @@
           }).join('') || '<span class="note">아직 기록이 없어요</span>'}</div>
         ${p.cityVisits ? `<div class="note detail">${p.uniqueCountries}개 나라 · ${p.uniqueCities}개 도시 · 도시 방문 ${p.cityVisits}회</div>` : ''}
         ${p.days ? `<div class="note detail">해외에서 보낸 날 총 ${p.days}일 · 최근 출국 ${dot(p.lastDep)}</div>` : ''}
+        ${p.planned ? `<div class="note" style="color:var(--accent)">🗓️ 예정 ${p.planned}건 · 다음 ${dday(p.nextDep)}</div>` : ''}
         ${p.missing ? `<div class="missing">⚠️ 나라 미입력 ${p.missing}건<span class="hint"> — 여행 목록에서 채워주세요</span></div>` : ''}
       </div>`;
     }).join('');
@@ -462,16 +492,22 @@
     $('personFilter').querySelectorAll('button').forEach(b => b.onclick = () => { filterPerson = b.dataset.person; renderTrips(); });
 
     const trips = DATA.trips.filter(t => !filterPerson || t.person === filterPerson);
-    $('tripList').innerHTML = trips.map(t => `
-      <div class="trip ${t.countries.length ? '' : 'todo'}" data-id="${esc(t.id)}">
+    const planned = trips.filter(isPlanned).sort((a, b) => (a.dep < b.dep ? -1 : 1));   // 가까운 순
+    const done = trips.filter(t => !isPlanned(t));
+    const row = t => `
+      <div class="trip ${isPlanned(t) ? 'planned' : t.countries.length ? '' : 'todo'}" data-id="${esc(t.id)}">
         <div>
-          <div class="when">${dot(t.dep)} ~ ${dot(t.ret).slice(5) || '?'} ${t.days ? `<span class="who">(${t.days - 1}박${t.days}일)</span>` : ''}</div>
+          <div class="when">${isPlanned(t) ? `<span class="tag plan">예정 ${dday(t.dep)}</span> ` : ''}${dot(t.dep)} ~ ${dot(t.ret).slice(5) || '?'} ${t.days ? `<span class="who">(${t.days - 1}박${t.days}일)</span>` : ''}</div>
           <div class="who">${esc(t.person)}</div>
           ${t.memo ? `<div class="memo">${esc(t.memo)}</div>` : ''}
         </div>
         <div>${t.countries.map(c => `<div class="tcountry">${chip(c)}<br>${cityLine(c.cities)}</div>`).join('') || '<span class="missing">나라 입력하기 ›</span>'}
           ${t.countries.length ? `<div class="tcount">${t.countries.length}개 나라${(n => n ? ' · ' + n + '개 도시' : '')(t.countries.reduce((n, c) => n + c.cities.length, 0))}</div>` : ''}</div>
-      </div>`).join('') || '<div class="note">여행 기록이 없어요</div>';
+      </div>`;
+    $('tripList').innerHTML =
+      (planned.length ? `<div class="sectionhead">🗓️ 예정 여행 ${planned.length}건</div>` + planned.map(row).join('') +
+        (done.length ? `<div class="sectionhead" style="margin-top:14px">✈️ 다녀온 여행 ${done.length}건</div>` : '') : '') +
+      (done.map(row).join('') || (planned.length ? '' : '<div class="note">여행 기록이 없어요</div>'));
     $('tripList').querySelectorAll('.trip').forEach(el => el.onclick = () => editTrip(el.dataset.id));
   }
 
@@ -562,7 +598,7 @@
     $('formTitle').textContent = '여행 추가';
     $('peopleHint').classList.remove('hidden');
     $('cancelBtn').classList.add('hidden'); $('deleteBtn').classList.add('hidden');
-    renderPeoplePick(); renderPicked();
+    renderPeoplePick(); renderPicked(); updatePlanHint();
   }
 
   function editTrip(id) {
@@ -574,12 +610,15 @@
     $('formTitle').textContent = '여행 수정';
     $('peopleHint').classList.add('hidden');
     $('cancelBtn').classList.remove('hidden'); $('deleteBtn').classList.remove('hidden');
-    renderPeoplePick(); renderPicked();
+    renderPeoplePick(); renderPicked(); updatePlanHint();
     showTab('form');
     $('countryInput').focus();
   }
 
   $('cancelBtn').onclick = () => showTab('trips');
+  const updatePlanHint = () => $('planHint').classList.toggle('hidden', !($('dep').value && $('dep').value > todayIso()));
+  $('dep').addEventListener('input', updatePlanHint);
+  $('dep').addEventListener('change', updatePlanHint);
 
   // 저장: 화면에 바로 반영하고, 시트 저장은 뒤에서 순서대로 (sync 대기열)
   $('saveBtn').onclick = () => {
@@ -607,7 +646,8 @@
       });
       if (Object.keys(ids).length) enqueue('add', { trip: Object.assign({ ids }, payload) });
       afterLocalChange();
-      toast(skipped.length ? `${skipped.join(', ')}: 같은 출국일 기록이 이미 있어서 건너뛰었어요` : '저장했어요 ✈️');
+      toast(skipped.length ? `${skipped.join(', ')}: 같은 출국일 기록이 이미 있어서 건너뛰었어요`
+        : payload.dep > todayIso() ? `예정 여행으로 저장했어요 🗓️ ${dday(payload.dep)}` : '저장했어요 ✈️');
       showTab('stats');
     }
     resetForm();
@@ -698,10 +738,33 @@
   window.addEventListener('beforeunload', e => { if (queue.length) { e.preventDefault(); e.returnValue = ''; } });
   window.addEventListener('online', () => { if (retryWake) retryWake(); });
 
-  /** 서버 computeStats_와 같은 계산 (화면에서 바로 통계를 보여 주려고) */
-  function computeStats(trips) {
+  /* ── 예정 여행: 출국일이 오늘보다 뒤면 '예정'. 날짜가 되면 저절로 여행 기록·통계에 들어감 ── */
+  function todayIso() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+  const isPlanned = t => !!t.dep && t.dep > todayIso();
+  function dday(dep) {
+    const n = Math.round((Date.parse(dep) - Date.parse(todayIso())) / 86400000);
+    return n > 0 ? 'D-' + n : 'D-DAY';
+  }
+  /** 같은 날 같이 떠나는 가족은 한 줄로 묶음 */
+  function upcomingGroups(trips) {
+    const groups = {};
+    trips.filter(isPlanned).forEach(t => {
+      const k = [t.dep, t.ret, JSON.stringify(t.countries.map(c => [c.name, c.cities]))].join('|');
+      (groups[k] = groups[k] || Object.assign({ people: [], ids: [] }, t)).people.push(t.person);
+      groups[k].ids.push(t.id);
+    });
+    return Object.values(groups).sort((a, b) => (a.dep < b.dep ? -1 : 1));
+  }
+
+  /** 서버 computeStats_와 같은 계산 (화면에서 바로 통계를 보여 주려고). 예정 여행은 빼고 셈 */
+  function computeStats(allTrips) {
+    const trips = allTrips.filter(t => !isPlanned(t));
     const people = DATA.family.map(f => {
       const mine = trips.filter(t => t.person === f.name);
+      const plannedMine = allTrips.filter(t => t.person === f.name && isPlanned(t)).sort((a, b) => (a.dep < b.dep ? -1 : 1));
       const visitCount = {}, cityCount = {};
       mine.forEach(t => t.countries.forEach(c => {
         visitCount[c.name] = (visitCount[c.name] || 0) + 1;
@@ -718,6 +781,8 @@
         days: mine.reduce((s, t) => s + (t.days || 0), 0),
         missing: mine.filter(t => !t.countries.length).length,
         lastDep: mine.reduce((m, t) => (t.dep > m ? t.dep : m), ''),
+        planned: plannedMine.length,
+        nextDep: plannedMine.length ? plannedMine[0].dep : '',
         visitCount, cityCount,
       };
     });
@@ -990,6 +1055,7 @@
   let countryListFor = null;
   function renderAll() {
     if (countryListFor !== DATA.countries) { countryListFor = DATA.countries; renderCountryList(); }
+    DATA.stats = computeStats(DATA.trips);   // 날짜가 지나면 예정 → 기록으로 바뀌므로 항상 오늘 기준으로 다시 셈
     renderStats(); renderTrips(); renderPeoplePick(); renderCertPerson();
   }
   function renderCountryList() {

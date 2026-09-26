@@ -4,7 +4,8 @@
  * 시트 구성
  *  - 여행기록 : 한 번 출국할 때마다 한 줄 (가족이 같이 가면 사람마다 한 줄씩)
  *               방문도시는 '오사카(일본), 교토(일본)'처럼 도시(나라) 형식으로 저장
- *  - 통계     : 사람별 출국 횟수 / 나라·도시 방문 횟수 / 가본 나라·도시 수, 연도별 출국 횟수
+ *  - 통계     : 사람별 출국 횟수 / 나라·도시 방문 횟수 / 가본 나라·도시 수, 연도별 출국 횟수, 예정 여행
+ *               출국일이 오늘 이후인 줄은 '예정 여행' (통계에서 빼고, 날짜가 되면 자동으로 들어감)
  *  - 나라별   : 나라마다 누가 몇 번 갔는지, 어느 도시에 갔는지 (국기 이미지 포함)
  *  - 국가목록 : 나라 이름 ↔ 국기 매칭표 (없는 나라는 여기에 한 줄 추가)
  *
@@ -90,6 +91,17 @@ function setupTripSheet_(ss) {
   sheet.setColumnWidth(COL.FLAGS, 120);
   sheet.setColumnWidths(COL.COUNT, 2, 60);
   sheet.setColumnWidth(COL.MEMO, 200);
+  // 예정 여행(출국일이 오늘 이후) 줄은 연한 파란색. 날짜가 지나면 저절로 색이 빠짐
+  const plannedRule = SpreadsheetApp.newConditionalFormatRule()
+    .whenFormulaSatisfied('=$' + columnLetter_(COL.DEP) + '2>TODAY()')
+    .setBackground('#e8efff')
+    .setRanges([sheet.getRange(2, 1, max - 1, TRIP_HEADERS.length)])
+    .build();
+  const rules = sheet.getConditionalFormatRules().filter(r => {
+    const c = r.getBooleanCondition();
+    return !(c && String(c.getCriteriaValues()[0]).indexOf('TODAY()') >= 0);
+  });
+  sheet.setConditionalFormatRules(rules.concat([plannedRule]));
   sheet.getRange(1, COL.COUNTRIES).setNote('나라 이름을 쉼표로 구분해서 입력하세요. 예) 일본, 태국\n도시 이름(다낭, 발리 등)을 쓰면 나라와 도시로 알아서 나눠줍니다.');
   sheet.getRange(1, COL.CITIES).setNote('도시를 쉼표로 구분해서 입력하세요. 예) 오사카, 교토, 방콕\n목록에 없는 도시는 어느 나라인지 오사카(일본)처럼 괄호로 적어 주세요.');
 }
@@ -309,12 +321,16 @@ function refreshAll() {
   cacheAppData_(lookup, trips, rebuildStats_(ss, trips));
 }
 
-/** 매일 새벽 트리거: 시트에서 다시 읽어 스냅샷을 최신으로 (시트를 직접 고친 게 빠졌어도 하루 안에 맞춰짐) */
+/**
+ * 매일 새벽 트리거: 시트에서 다시 읽어 통계 시트와 스냅샷을 최신으로.
+ * - 출국일이 지난 예정 여행이 통계에 들어감
+ * - 시트를 직접 고친 게 빠졌어도 하루 안에 맞춰짐
+ */
 function refreshSnapshot() {
   const ss = getSpreadsheet_();
   const lookup = buildLookup_(ss);
   const trips = tripsFromRows_(loadStore_(ss).rows, lookup);
-  cacheAppData_(lookup, trips, computeStats_(trips));
+  cacheAppData_(lookup, trips, rebuildStats_(ss, trips));
 }
 
 /** 메뉴: 메모에 적어 둔 도시 이름을 '방문도시' 칸으로 옮김 (목록에 있는 도시만, 나머지 메모는 그대로) */
@@ -382,7 +398,14 @@ function rebuildStats_(ss, trips) {
   return stats;
 }
 
-function computeStats_(trips) {
+/**
+ * 통계: 출국일이 오늘(서울 기준) 이후인 '예정 여행'은 빼고 셈.
+ * 날짜가 지나면 저절로 들어감 (새벽 트리거가 통계 시트도 다시 계산)
+ */
+function computeStats_(allTrips) {
+  const today = formatIso_(new Date());
+  const trips = allTrips.filter(t => t.dep && t.dep <= today);
+  const planned = allTrips.filter(t => t.dep && t.dep > today).sort((a, b) => (a.dep < b.dep ? -1 : 1));
   const people = FAMILY.map(f => {
     const mine = trips.filter(t => t.person === f.name);
     const visitCount = {};   // 나라 → 횟수
@@ -403,6 +426,7 @@ function computeStats_(trips) {
       days: mine.reduce((s, t) => s + (t.days || 0), 0),
       missing: mine.filter(t => !t.countries.length).length,
       lastDep: lastDep,
+      planned: planned.filter(t => t.person === f.name).length,
       visitCount: visitCount,
       cityCount: cityCount,
     };
@@ -425,7 +449,16 @@ function computeStats_(trips) {
     years[y][t.person] = (years[y][t.person] || 0) + 1;
   });
 
-  return { people: people, countries: countries, years: years };
+  // 같은 날 같이 떠나는 가족은 한 줄로
+  const upcoming = [];
+  planned.forEach(t => {
+    const text = tripTexts_(t.countries);
+    const g = upcoming.find(u => u.dep === t.dep && u.ret === t.ret && u.countries === text.countries && u.cities === text.cities);
+    if (g) g.people.push(t.person);
+    else upcoming.push({ dep: t.dep, ret: t.ret, people: [t.person], countries: text.countries, cities: text.cities, memo: t.memo });
+  });
+
+  return { people: people, countries: countries, years: years, upcoming: upcoming };
 }
 
 /** { 오사카: 2, 교토: 1 } → '오사카×2, 교토' */
@@ -468,6 +501,13 @@ function writeStatsSheet_(ss, stats) {
   grid.push(line(['연도'].concat(FAMILY.map(f => f.name))));
   Object.keys(stats.years).sort().reverse()
     .forEach(y => grid.push(line([y].concat(FAMILY.map(f => stats.years[y][f.name] || '')))));
+  if (stats.upcoming.length) {
+    grid.push(blank());
+    grid.push(line(['🗓️ 예정 여행 (출국일이 되면 자동으로 위 통계에 들어가요)']));
+    grid.push(line(['출국일', '입국일', '여행자', '나라', '도시', '메모']));
+    stats.upcoming.forEach(u => grid.push(line([u.dep.replace(/-/g, '.'), (u.ret || '').replace(/-/g, '.'),
+      u.people.join(', '), u.countries, u.cities.replace(/\([^)]*\)/g, ''), u.memo])));
+  }
 
   const old = sheet.getLastRow();
   if (old > grid.length) sheet.getRange(grid.length + 1, 1, old - grid.length, width).clearContent();
@@ -767,6 +807,12 @@ function deleteTrip_(id) {
 }
 
 /* ───────────────────────── 공통 ───────────────────────── */
+
+function columnLetter_(n) {
+  let s = '';
+  for (; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + (n - 1) % 26) + s;
+  return s;
+}
 
 let spreadsheet_ = null;
 function getSpreadsheet_() {
