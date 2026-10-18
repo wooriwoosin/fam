@@ -1,0 +1,42 @@
+# Supabase 무료 프로젝트는 7일 동안 요청이 없으면 일시 정지됩니다.
+# 사흘에 한 번 trips 테이블을 가볍게 읽어서 깨어 있게 합니다. (config.js의 공개 주소·키 사용)
+# Actions 탭 → "Supabase keep-alive" → Run workflow 로 바로 실행해 볼 수도 있어요.
+name: Supabase keep-alive
+
+on:
+  schedule:
+    - cron: '17 3 */3 * *'   # 사흘마다 03:17 UTC (한국 12:17)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: config.js
+          sparse-checkout-cone-mode: false
+
+      - name: Ping Supabase
+        run: |
+          read -r URL KEY < <(node -e '
+            global.window = {};
+            require("./config.js");
+            const c = window.FAM_CONFIG || {};
+            console.log((c.supabaseUrl || "-").replace(/\/+$/, ""), c.supabaseKey || "-");
+          ')
+          if [ "$URL" = "-" ] || [ "$KEY" = "-" ]; then
+            echo "::notice::config.js에 Supabase 주소/키가 아직 없어서 건너뜁니다."
+            exit 0
+          fi
+          AUTH=()
+          case "$KEY" in sb_*) ;; *) AUTH=(-H "Authorization: Bearer $KEY") ;; esac
+          CODE=$(curl -sS -o /tmp/out.json -w '%{http_code}' --retry 3 --retry-delay 10 \
+            -H "apikey: $KEY" "${AUTH[@]}" "$URL/rest/v1/trips?select=id&limit=1")
+          echo "HTTP $CODE"
+          cat /tmp/out.json; echo
+          [ "$CODE" = "200" ] || { echo "::error::Supabase 응답이 $CODE 입니다"; exit 1; }

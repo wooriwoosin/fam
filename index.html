@@ -143,20 +143,22 @@
 <main>
   <div id="loading" class="loading">불러오는 중…</div>
 
-  <!-- 설정 / 연결 문제 -->
+  <!-- 설정 -->
   <div id="settings" class="card hidden">
     <h3 style="margin-top:0">⚙️ 설정</h3>
     <div id="setMsg" class="privacy hidden" style="background:#fdeaea;color:#8a1c1c"></div>
-    <label>웹앱 주소 (Apps Script → 배포 → 배포 관리 → 웹 앱 URL, /exec 로 끝나는 주소)</label>
-    <input type="text" id="setApi" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off">
-    <div class="actions">
-      <button class="btn" id="setSave">저장하고 다시 불러오기</button>
-      <button class="btn ghost" id="setReset">기본 주소로</button>
-      <button class="btn ghost" id="setForgetKey">비밀번호 다시 입력</button>
-      <button class="btn ghost" id="setClose">닫기</button>
+    <div class="note" id="setInfo" style="margin-top:0"></div>
+    <label>백업</label>
+    <div class="actions" style="margin-top:0">
+      <button class="btn" id="exportBtn">📥 엑셀로 내려받기</button>
     </div>
-    <div class="note" id="setTiming"></div>
-    <div class="note">주소와 비밀번호는 이 기기에만 저장돼요. 가족에게는 <b>화면주소?api=웹앱주소</b> 로 링크를 보내면 한 번에 설정돼요.</div>
+    <div class="note">모든 여행 기록을 엑셀(CSV) 파일로 저장해요. 가끔 내려받아 두면 그게 백업이에요.</div>
+    <label>예전 구글 시트에서 옮겨오기 (한 번만)</label>
+    <div class="actions" style="margin-top:0">
+      <button class="btn ghost" id="migrateBtn">구글 시트 기록 옮겨오기</button>
+    </div>
+    <div class="note" id="migrateMsg">예전 구글 시트의 기록을 그대로 가져와요. 여러 번 눌러도 중복으로 들어가지 않아요.</div>
+    <div class="actions"><button class="btn ghost" id="setClose">닫기</button></div>
   </div>
 
   <!-- 통계 -->
@@ -239,6 +241,12 @@
 </main>
 <div id="toast"></div>
 
+<script src="config.js"></script>
+<script>
+  // Supabase 주소·키를 넣기 전까지는 예전(구글 시트) 화면을 그대로 씀
+  if (!(window.FAM_CONFIG && FAM_CONFIG.supabaseUrl && FAM_CONFIG.supabaseKey)) location.replace('legacy.html' + location.search);
+</script>
+<script src="countries.js"></script>
 <script>
   let DATA = null;
   let filterPerson = '';
@@ -258,152 +266,89 @@
     setTimeout(() => t.classList.remove('show'), 2200);
   }
 
-  // Apps Script 웹앱 주소 (배포 → 배포 관리에서 복사). 시트 저장/조회만 담당합니다.
-  // Apps Script 웹앱 기본 주소 (배포 → 배포 관리에서 복사). 화면의 ⚙️ 설정에서 바꾸면 이 기기에 저장됩니다.
-  const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbxisKGyYyoV11Pw70RZEYfyTl99QTAY9NYjUJvT5sZNSQdoPpofTFJO8IEFD7cfIM_S/exec';
-  const KEY_STORAGE = 'famTravelKey';
-  const API_STORAGE = 'famTravelApi';
-  // 저장 요청도 같은 방식 (서버가 같은 요청을 두 번 받아도 한 번만 반영하도록 만들어 둠)
-  const WRITE_TIMEOUT_MS = 60000;
-  const WRITE_HEDGE_AT = [25000];
-  // 불러오기('get'): 먼저 보낸 요청은 끝까지(최대 90초) 살려 두고, 15초·35초에 요청을 하나씩 더 보내서
-  // 가장 먼저 오는 응답을 씀. (앞 요청을 끊으면 구글 서버가 깨어나는 중이던 작업까지 버리게 됨)
-  const GET_TIMEOUT_MS = 90000;
-  const GET_HEDGE_AT = [15000, 35000];
-  const GET_TRIES = 1 + GET_HEDGE_AT.length;
+  /* ── 데이터: Supabase (PostgREST) ──
+     config.js 의 supabaseUrl / supabaseKey 로 trips 테이블을 직접 읽고 씀 (완전 공개, 로그인 없음).
+     같은 ID로 다시 저장하면 덮어쓰기(upsert)라서, 재시도해도 중복이 생기지 않음. */
+  const CFG = window.FAM_CONFIG || {};
+  const FAMILY = CFG.family || [];
+  const COUNTRIES = window.COUNTRY_LIST || [];
+  const CITIES = window.CITY_DATA || {};
+  const configured = () => /^https:\/\/[^/]+/.test(CFG.supabaseUrl || '') && !!CFG.supabaseKey;
+  const REQUEST_TIMEOUT_MS = 20000;
 
   const store = {
     get: k => { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } },
     set: (k, v) => { try { v ? localStorage.setItem(k, v) : localStorage.removeItem(k); } catch (e) {} },
   };
-  const getKey = () => store.get(KEY_STORAGE);
-  const setKey = k => store.set(KEY_STORAGE, k);
-  const getApiUrl = () => store.get(API_STORAGE) || DEFAULT_API_URL;
-  function isValidApiUrl(u) { return /^https:\/\/script\.google\.com\/(a\/[^/]+\/)?macros\/s\/[\w-]+\/exec\/?$/.test(u); }
-  // ?api=웹앱주소 로 열면 그 주소를 이 기기에 저장 (가족에게 링크로 공유할 때)
-  (() => {
-    const u = new URLSearchParams(location.search).get('api');
-    if (u && isValidApiUrl(u)) { store.set(API_STORAGE, u); history.replaceState(null, '', location.pathname); }
-  })();
-
-  let lastTiming = null;
-  const TRANSPORT_STORAGE = 'famTravelTransport';
-
-  /** 웹앱으로 한 번 보내기. credentials: 'omit' → 여러 구글 계정 로그인 쿠키가 끼어들지 않게 */
-  async function send(transport, payload, timeoutMs) {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    const t0 = performance.now();
-    try {
-      const url = getApiUrl();
-      const res = transport === 'get'
-        ? await fetch(url + (url.includes('?') ? '&' : '?') + 'p=' + encodeURIComponent(payload), { credentials: 'omit', signal: ctrl.signal })
-        : await fetch(url, { method: 'POST', body: payload, credentials: 'omit', signal: ctrl.signal });
-      return { res, text: await res.text(), sec: Math.round((performance.now() - t0) / 1000) };
-    } catch (e) {
-      if (e.name === 'AbortError') throw new ApiError(`서버가 ${timeoutMs / 1000}초 안에 응답하지 않았어요. 잠시 뒤 다시 시도해 주세요.`, 'timeout');
-      throw new ApiError('웹앱에 연결하지 못했어요. 인터넷 연결을 확인하고, 배포의 액세스 권한이 "모든 사용자"인지 확인해 주세요.', 'network');
-    } finally { clearTimeout(timer); }
-  }
 
   class ApiError extends Error {
+    // kind: network | timeout | transient(5xx·429, 다시 시도) | conflict(409) | config(키·테이블 문제) | server(그 밖의 4xx)
     constructor(message, kind) { super(message); this.kind = kind; }
   }
 
-  // Content-Type을 지정하지 않으면 text/plain으로 보내져서 CORS 사전요청 없이 Apps Script에 전달됩니다.
-  async function api(action, extra, onRetry) {
-    const isGet = action === 'get';
-    const TIMEOUT = isGet ? GET_TIMEOUT_MS : WRITE_TIMEOUT_MS;
-    const HEDGE_AT = isGet ? GET_HEDGE_AT : WRITE_HEDGE_AT;
-    const TRIES = 1 + HEDGE_AT.length;
-    return new Promise((resolve, reject) => {
-      let settled = false, running = 0, launched = 0, lastError = null;
-      const timers = [];
-      const finish = (ok, v) => { if (settled) return; settled = true; timers.forEach(clearTimeout); ok ? resolve(v) : reject(v); };
-      const launch = () => {
-        if (settled || launched >= TRIES) return;
-        const n = ++launched;
-        running++;
-        if (n > 1 && onRetry) onRetry(n);
-        const budget = TIMEOUT - (n === 1 ? 0 : HEDGE_AT[n - 2]);
-        apiOnce(action, extra, Math.max(budget, 20000)).then(v => finish(true, v), e => {
-          running--;
-          lastError = e;
-          // 주소·권한·비밀번호 문제는 다시 보내도 같으니 바로 알림
-          if (!['timeout', 'network', 'transient'].includes(e.kind)) return finish(false, e);
-          if (!running) {
-            if (launched < TRIES) launch();   // 진행 중인 요청이 없으면 다음 요청을 바로 보냄
-            else finish(false, lastError);
-          }
-        });
-      };
-      launch();
-      HEDGE_AT.forEach(ms => timers.push(setTimeout(launch, ms)));
-    });
+  async function rest(method, query, body, prefer) {
+    if (!configured()) throw new ApiError('config.js에 Supabase 주소와 키를 넣어 주세요', 'config');
+    const key = CFG.supabaseKey;
+    const headers = { apikey: key, 'Content-Type': 'application/json' };
+    if (!/^sb_/.test(key)) headers.Authorization = 'Bearer ' + key;   // 예전 anon(JWT) 키만 Authorization에도 넣음
+    if (prefer) headers.Prefer = prefer;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+    let res, text;
+    try {
+      res = await fetch(CFG.supabaseUrl.replace(/\/+$/, '') + '/rest/v1/trips' + query,
+        { method, headers, body: body == null ? undefined : JSON.stringify(body), signal: ctrl.signal });
+      text = await res.text();
+    } catch (e) {
+      if (e.name === 'AbortError') throw new ApiError(`서버가 ${REQUEST_TIMEOUT_MS / 1000}초 안에 응답하지 않았어요`, 'timeout');
+      throw new ApiError('서버에 연결하지 못했어요. 인터넷 연결을 확인해 주세요.', 'network');
+    } finally { clearTimeout(timer); }
+    if (res.ok) return text ? JSON.parse(text) : null;
+    let msg = text;
+    try { const j = JSON.parse(text); msg = j.message || j.msg || j.error || text; } catch (e) {}
+    if (res.status === 409) throw new ApiError('같은 사람·같은 출국일 기록이 이미 있어요', 'conflict');
+    if ([401, 403].includes(res.status)) throw new ApiError('Supabase 키가 맞지 않거나 권한이 없어요 (config.js 확인, schema.sql 실행 여부 확인): ' + msg, 'config');
+    if (res.status === 404) throw new ApiError('trips 테이블을 찾을 수 없어요. Supabase SQL Editor에서 schema.sql을 실행해 주세요: ' + msg, 'config');
+    if (res.status >= 500 || res.status === 429) throw new ApiError('Supabase 일시 오류 (' + res.status + '): ' + msg, 'transient');
+    throw new ApiError('저장할 수 없는 값이에요 (' + res.status + '): ' + msg, 'server');
   }
 
-  async function apiOnce(action, extra, timeoutMs) {
-    let key = getKey();
-    if (!key) {
-      key = (prompt('가족 비밀번호를 입력해 주세요') || '').trim();
-      if (!key) throw new ApiError('비밀번호가 필요해요', 'auth');
-    }
-    const started = performance.now();
-    const payload = JSON.stringify(Object.assign({ action, key }, extra));
-    // 기본은 POST. POST가 404면 같은 요청을 GET(?p=…)으로 보내 보고, 되면 이 기기에서는 계속 GET 사용
-    let transport = store.get(TRANSPORT_STORAGE) === 'get' ? 'get' : 'post';
-    let { res, text, sec } = await send(transport, payload, timeoutMs);
-    const hostOf = r => { try { return new URL(r.url).host; } catch (e) { return ''; } };
-    if (res.status === 404 && transport === 'post' && !/googleusercontent/.test(hostOf(res))) {
-      const retry = await send('get', payload, timeoutMs);
-      if (retry.res.status !== 404) {
-        store.set(TRANSPORT_STORAGE, 'get');
-        console.info('[여행기록] POST가 404라서 GET 방식으로 전환');
-        ({ res, text, sec } = retry);
-        transport = 'get';
-      }
-    }
-    if (res.status === 404) {
-      const where = (() => { try { return new URL(res.url).host; } catch (e) { return '?'; } })();
-      // 스크립트까지는 도착했는데, 구글이 결과를 돌려주는 마지막 단계(googleusercontent)에서 404
-      // → 대개 실행이 오래 걸려 구글이 응답 전달을 포기한 것. 주소·권한 문제가 아니므로 일시 오류로 처리
-      if (/googleusercontent/.test(where)) {
-        throw new ApiError(`구글 서버가 결과를 전달하지 못했어요 (${sec}초 뒤 404). 잠시 뒤 다시 불러올게요.`, 'transient');
-      }
-      const custom = store.get(API_STORAGE) ? ' · ⚙️ 설정에 직접 넣은 주소 사용 중' : '';
-      throw new ApiError(`웹앱을 열 수 없어요 (404, ${where}${custom}). ① 배포 관리에서 액세스 권한이 "모든 사용자"인지 ② 웹앱 주소가 바뀌지 않았는지 확인해 주세요. ` +
-        `사용 중인 주소 끝자리: …${getApiUrl().slice(-14)}`, 'notfound');
-    }
-    if (!res.ok) throw new ApiError('서버 응답 오류 (' + res.status + ')', 'http');
-    let body;
-    try { body = JSON.parse(text); } catch (e) {
-      const title = (text.match(/<title>([^<]*)<\/title>/i) || [])[1] || '';
-      throw new ApiError('웹앱이 데이터 대신 웹페이지를 돌려줬어요' + (title ? ` ("${title}")` : '') +
-        '. Code.gs를 붙여 넣은 뒤 "새 버전"으로 배포했는지, 액세스 권한이 "모든 사용자"인지 확인해 주세요.', 'html');
-    }
-    if (!body.ok) {
-      if (body.auth) { setKey(''); return apiOnce(action, extra, timeoutMs); }
-      throw new ApiError(body.error, body.retry ? 'transient' : 'server');
-    }
-    setKey(key);
-    if (body.timing) {
-      // 서버 처리 시간 vs 전체 시간 → 차이가 크면 구글 서버 대기(콜드 스타트)/네트워크 문제
-      lastTiming = Object.assign({ action, clientTotal: Math.round(performance.now() - started) }, body.timing);
-      console.info('[여행기록] 시간(ms)', lastTiming);
-    }
-    return body;
-  }
+  const enc = encodeURIComponent;
+  const db = {
+    list: () => rest('GET', '?select=id,person,dep,ret,countries,memo&order=dep.desc,person.asc&limit=10000'),
+    upsert: rows => rest('POST', '?on_conflict=id', rows, 'resolution=merge-duplicates,return=minimal'),
+    // 같은 사람·같은 출국일이 이미 있으면 건너뜀 (증명서·옮겨오기). 실제로 들어간 줄만 돌려받음
+    insertNew: rows => rest('POST', '?on_conflict=person,dep&select=id', rows, 'resolution=ignore-duplicates,return=representation'),
+    update: (id, fields) => rest('PATCH', '?id=eq.' + enc(id), fields, 'return=minimal'),
+    remove: id => rest('DELETE', '?id=eq.' + enc(id), null, 'return=minimal'),
+  };
 
-  /* ── ⚙️ 설정: 웹앱 주소·비밀번호 ── */
+  /** DB 줄 ↔ 화면 여행 */
+  function rowToTrip(r) {
+    const dep = String(r.dep || '').slice(0, 10), ret = r.ret ? String(r.ret).slice(0, 10) : '';
+    return {
+      id: String(r.id), person: r.person, dep, ret, days: tripDays(dep, ret), memo: r.memo || '',
+      countries: (Array.isArray(r.countries) ? r.countries : []).map(c => ({ name: String(c.name || ''), code: c.code || '', cities: (c.cities || []).map(String) })).filter(c => c.name),
+    };
+  }
+  function tripToRow(t) {
+    return { id: t.id, person: t.person, dep: t.dep, ret: t.ret || null, memo: t.memo || '',
+             countries: t.countries.map(c => ({ name: c.name, code: c.code || '', cities: c.cities.slice() })) };
+  }
+  function freshData(trips) {
+    return { family: FAMILY, countries: COUNTRIES, cities: CITIES, trips: trips.sort(byDepDesc) };
+  }
+  const byDepDesc = (a, b) => (a.dep < b.dep ? 1 : a.dep > b.dep ? -1 : a.person.localeCompare(b.person, 'ko'));
+
+  /* ── ⚙️ 설정 ── */
   function openSettings(message) {
     $('setMsg').textContent = message || '';
     $('setMsg').classList.toggle('hidden', !message);
-    $('setApi').value = getApiUrl();
-    $('setTiming').textContent = lastTiming
-      ? `마지막 불러오기: 전체 ${(lastTiming.clientTotal / 1000).toFixed(1)}초 · 서버 처리 ${(lastTiming.total / 1000).toFixed(1)}초` +
-        (lastTiming.cached ? ' (캐시)' : lastTiming.rows != null ? ` (여행 ${lastTiming.rows}줄 읽음)` : '')
-      : '';
+    $('setInfo').textContent = configured()
+      ? `연결: ${CFG.supabaseUrl.replace(/^https:\/\//, '')} · 여행 ${DATA ? DATA.trips.length : 0}건`
+      : '아직 연결 전이에요. config.js에 Supabase 주소와 키를 넣어 주세요.';
     $('settings').classList.remove('hidden');
+    window.scrollTo(0, 0);
   }
   function closeSettings() { $('settings').classList.add('hidden'); }
 
@@ -641,7 +586,7 @@
   ['input', 'change'].forEach(ev => $('dep').addEventListener(ev, () => { syncRetWithDep(true); updatePlanHint(); }));
   ['input', 'change'].forEach(ev => $('ret').addEventListener(ev, () => $('retHint').classList.add('hidden')));
 
-  // 저장: 화면에 바로 반영하고, 시트 저장은 뒤에서 순서대로 (sync 대기열)
+  // 저장: 화면에 바로 반영하고, Supabase 저장은 뒤에서 순서대로 (sync 대기열)
   $('saveBtn').onclick = () => {
     if ($('countryInput').value.trim()) addCountryFromInput();
     // 도시 입력칸에 쓰다 만 글자도 저장
@@ -656,8 +601,10 @@
     const base = { dep: payload.dep, ret: payload.ret, days: tripDays(payload.dep, payload.ret), countries, memo: payload.memo };
     if (editingId) {
       const t = DATA.trips.find(x => x.id === editingId);
-      if (t) Object.assign(t, base, { person: payload.person });
-      enqueue('update', { id: editingId, trip: payload });
+      if (t) {
+        Object.assign(t, base, { person: payload.person });
+        enqueue('update', { id: editingId, row: tripToRow(t) });
+      }
       afterLocalChange(); toast('저장했어요 ✈️'); showTab('trips');
     } else {
       const skipped = people.filter(p => DATA.trips.some(t => t.person === p && t.dep === payload.dep));
@@ -666,7 +613,8 @@
         ids[p] = newId();
         DATA.trips.push(Object.assign({ id: ids[p], person: p }, base, { countries: countries.map(c => Object.assign({}, c, { cities: c.cities.slice() })) }));
       });
-      if (Object.keys(ids).length) enqueue('add', { trip: Object.assign({ ids }, payload) });
+      const rows = DATA.trips.filter(t => Object.values(ids).includes(t.id)).map(tripToRow);
+      if (rows.length) enqueue('add', { rows });
       afterLocalChange();
       toast(skipped.length ? `${skipped.join(', ')}: 같은 출국일 기록이 이미 있어서 건너뛰었어요`
         : payload.dep > todayIso() ? `예정 여행으로 저장했어요 🗓️ ${dday(payload.dep)}` : '저장했어요 ✈️');
@@ -683,10 +631,10 @@
   };
 
   /* ── 빠르게: 저장 대기열 + 기기 캐시 ──
-     - 저장/수정/삭제는 화면에 먼저 반영하고, 서버(시트) 저장은 뒤에서 순서대로 보냄
+     - 저장/수정/삭제는 화면에 먼저 반영하고, Supabase 저장은 뒤에서 순서대로 보냄
      - 마지막으로 받은 데이터를 기기에 저장해 두고, 다음에 열 때 바로 보여 준 뒤 최신으로 바꿈 */
-  const DATA_STORAGE = 'famTravelData_v2';
-  const QUEUE_STORAGE = 'famTravelQueue_v1';
+  const DATA_STORAGE = 'famTravelData_v3';
+  const QUEUE_STORAGE = 'famTravelQueue_v2';
   // 저장 대기열: 기기에 저장해 두어서 창을 닫거나 새로고침해도 사라지지 않음
   const queue = (() => { try { return JSON.parse(localStorage.getItem(QUEUE_STORAGE) || '[]'); } catch (e) { return []; } })();
   let syncing = false;
@@ -735,20 +683,20 @@
     let fails = 0;
     while (queue.length) {
       try {
-        const res = await api(queue[0].action, queue[0].extra);
+        await runJob(queue[0]);
         queue.shift(); saveQueue(); fails = 0;
-        // 대기 중인 저장이 없을 때만 서버 결과로 맞춤 (그 사이 화면에서 바꾼 내용을 덮지 않도록)
-        if (!queue.length && res.data) { mergeData(res.data); renderAll(); saveLocal(); }
         setSync(queue.length ? `저장 중… (${queue.length})` : '✓ 저장됨');
+        // 대기 중인 저장이 다 끝나면 서버 기준으로 한 번 맞춤 (다른 가족이 저장한 것도 반영)
+        if (!queue.length) await syncFromServer();
       } catch (e) {
-        if (['server', 'auth'].includes(e.kind)) {
-          // 입력값 문제 등 다시 보내도 안 되는 오류: 이 저장만 빼고 알림, 시트 기준으로 다시 맞춤
+        if (['server', 'conflict'].includes(e.kind)) {
+          // 다시 보내도 안 되는 저장(같은 출국일이 이미 있음 등): 이 저장만 빼고 알림, 서버 기준으로 다시 맞춤
           queue.shift(); saveQueue();
           toast('저장하지 못했어요: ' + e.message);
-          if (!queue.length) { try { mergeData((await api('get')).data); renderAll(); saveLocal(); } catch (_) {} }
+          if (!queue.length) await syncFromServer();
           continue;
         }
-        // 연결·시간 초과·구글 일시 오류: 화면 내용은 그대로 두고 잠시 뒤 자동으로 다시 시도
+        // 연결·시간 초과·일시 오류·키 문제: 화면 내용은 그대로 두고 잠시 뒤 자동으로 다시 시도
         const wait = RETRY_DELAYS[Math.min(fails, RETRY_DELAYS.length - 1)];
         fails++;
         console.warn('[여행기록] 저장 재시도 예정', e.message);
@@ -759,7 +707,19 @@
     syncing = false;
     setTimeout(() => { if (!queue.length && $('sync').textContent === '✓ 저장됨') setSync(''); }, 2500);
   }
-  function mergeData(d) { DATA = Object.assign({}, DATA || {}, d); }
+  function runJob(job) {
+    const x = job.extra || {};
+    if (job.action === 'add') return db.upsert(x.rows);
+    if (job.action === 'update') return db.upsert([x.row]);   // 수정도 같은 ID로 덮어쓰기 (몇 번 다시 보내도 결과가 같음)
+    if (job.action === 'delete') return db.remove(x.id);
+    return Promise.resolve();   // 모르는 작업(예전 버전)은 버림
+  }
+  async function syncFromServer() {
+    try {
+      const trips = (await db.list()).map(rowToTrip);
+      if (!queue.length) { DATA = freshData(trips); renderAll(); saveLocal(); }
+    } catch (e) { console.warn('[여행기록] 서버 기준 맞추기 실패', e.message); }
+  }
   // 대기열은 기기에 남으니 닫아도 다음에 이어서 저장됨. 그래도 저장 중이면 한 번 알려 줌
   window.addEventListener('beforeunload', e => { if (queue.length) { e.preventDefault(); e.returnValue = ''; } });
   window.addEventListener('online', () => { if (retryWake) retryWake(); });
@@ -1061,13 +1021,11 @@
     if (!rows.length) return toast('저장할 날짜가 없어요');
     $('certSave').disabled = true;
     try {
-      // 주소 길이 제한(GET 방식) 대비 20건씩 나눠 보냄
-      let res = { added: 0, skipped: 0 };
-      for (let i = 0; i < rows.length; i += 20) {
-        const part = await api('import', { person: certPerson, trips: rows.slice(i, i + 20) });
-        res = Object.assign(part, { added: res.added + part.added, skipped: res.skipped + part.skipped });
-      }
-      mergeData(res.data); renderAll(); saveLocal();
+      // 같은 사람·같은 출국일은 DB가 알아서 건너뜀
+      const unique = [...new Map(rows.map(r => [r.dep, r])).values()];
+      const inserted = await db.insertNew(unique.map(r => ({ id: newId(), person: certPerson, dep: r.dep, ret: r.ret || null, memo: '출입국증명서', countries: [] })));
+      const res = { added: inserted.length, skipped: rows.length - inserted.length };
+      await syncFromServer();
       toast(`${res.added}건 저장했어요` + (res.skipped ? ` (이미 있던 ${res.skipped}건은 건너뜀)` : '') + '. 이제 나라를 채워 주세요!');
       filterPerson = certPerson; certRows = [];
       $('certResult').classList.add('hidden'); $('certDropText').textContent = '여기를 눌러 파일 선택 (또는 끌어다 놓기)';
@@ -1094,58 +1052,104 @@
 
   $('setBtn').onclick = () => openSettings();
   $('setClose').onclick = closeSettings;
-  $('setReset').onclick = () => { $('setApi').value = DEFAULT_API_URL; };
-  $('setForgetKey').onclick = () => { setKey(''); toast('다음 요청 때 비밀번호를 다시 물어볼게요'); };
-  $('setSave').onclick = () => {
-    const u = $('setApi').value.trim();
-    if (!isValidApiUrl(u)) return toast('https://script.google.com/macros/s/…/exec 형태의 주소를 넣어 주세요');
-    store.set(API_STORAGE, u === DEFAULT_API_URL ? '' : u);
-    store.set(TRANSPORT_STORAGE, '');
-    closeSettings(); loadFresh();
+
+  /* 📥 엑셀(CSV) 내려받기: 엑셀에서 한글이 깨지지 않게 BOM을 붙임 */
+  $('exportBtn').onclick = () => {
+    if (!DATA || !DATA.trips.length) return toast('내려받을 기록이 없어요');
+    const q = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+    const head = ['여행자', '출국일', '입국일', '기간', '상태', '방문국가', '방문도시', '나라 수', '도시 수', '메모', 'ID'];
+    const lines = DATA.trips.slice().sort(byDepDesc).map(t => [
+      t.person, t.dep, t.ret, t.days ? (t.days - 1) + '박' + t.days + '일' : '', isPlanned(t) ? '예정' : '다녀옴',
+      t.countries.map(c => c.name).join(', '),
+      t.countries.map(c => c.cities.map(x => x + '(' + c.name + ')').join(', ')).filter(Boolean).join(', '),
+      t.countries.length, t.countries.reduce((n, c) => n + c.cities.length, 0), t.memo, t.id,
+    ].map(q).join(','));
+    const blob = new Blob(['﻿' + [head.map(q).join(',')].concat(lines).join('\r\n')], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `family-travel_${todayIso().replace(/-/g, '')}.csv`;   // 한글 파일명은 일부 브라우저에서 'download'로 바뀜
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    toast(`${DATA.trips.length}건을 내려받았어요`);
+  };
+
+  /* 예전 구글 시트(Apps Script)에서 한 번에 옮겨오기. 여행 ID를 그대로 써서 여러 번 눌러도 중복 없음 */
+  async function fetchOldGas() {
+    let key = store.get('famTravelKey');
+    if (!key) key = (prompt('예전 구글 시트용 가족 비밀번호를 입력해 주세요') || '').trim();
+    if (!key) throw new Error('예전 비밀번호가 필요해요');
+    const payload = JSON.stringify({ action: 'get', key });
+    const tryFetch = async url => { const r = await fetch(url.method ? url.url : url, url.method ? url : { credentials: 'omit' }); return r.ok ? JSON.parse(await r.text()) : null; };
+    let body = null;
+    try { body = await tryFetch({ url: CFG.oldGasUrl, method: 'POST', body: payload, credentials: 'omit' }); } catch (e) {}
+    if (!body) { try { body = await tryFetch(CFG.oldGasUrl + '?p=' + encodeURIComponent(payload)); } catch (e) {} }
+    if (!body) throw new Error('구글 시트 쪽에 연결하지 못했어요. 잠시 뒤 다시 눌러 주세요.');
+    if (!body.ok) { if (body.auth) store.set('famTravelKey', ''); throw new Error(body.error); }
+    store.set('famTravelKey', key);
+    return body.data.trips;
+  }
+  $('migrateBtn').onclick = async () => {
+    if (!CFG.oldGasUrl) return toast('config.js에 예전 구글 시트 주소(oldGasUrl)가 없어요');
+    $('migrateBtn').disabled = true;
+    $('migrateMsg').textContent = '구글 시트에서 읽는 중… (최대 1분)';
+    try {
+      const old = await fetchOldGas();
+      const rows = old.filter(t => t.person && t.dep).map(t => tripToRow({
+        id: t.id, person: t.person, dep: t.dep, ret: t.ret, memo: t.memo || '',
+        countries: (t.countries || []).map(c => ({ name: c.name, code: c.code || '', cities: c.cities || [] })),
+      }));
+      $('migrateMsg').textContent = `${rows.length}건 옮기는 중…`;
+      let added = 0;
+      for (let i = 0; i < rows.length; i += 200) added += (await db.insertNew(rows.slice(i, i + 200))).length;
+      await syncFromServer();
+      $('migrateMsg').textContent = `✓ 구글 시트 ${rows.length}건 중 ${added}건을 새로 옮겼어요` + (rows.length - added ? ` (${rows.length - added}건은 이미 있어서 건너뜀)` : '') + '.';
+      toast('옮겨오기 완료 ✈️');
+    } catch (e) {
+      $('migrateMsg').textContent = '⚠️ ' + e.message;
+    } finally { $('migrateBtn').disabled = false; }
   };
 
   let loadRetryTimer = null;
   function showLoadError(e) {
-    const fixable = ['notfound', 'html'].indexOf(e.kind) >= 0;   // 주소·배포 설정 문제일 때만 설정 창
     console.warn('[여행기록] 불러오기 실패', e.kind, e.message);
     if (DATA) {
       // 기기에 저장된 기록은 그대로 보여 주고, 제목 옆 표시를 누르거나 1분 뒤 자동으로 다시 불러옴
       setSync('⚠️ 최신 기록을 못 불러왔어요 · 누르면 다시', true);
-      if (fixable) openSettings(e.message);
+      if (e.kind === 'config') openSettings(e.message);
       clearTimeout(loadRetryTimer);
       loadRetryTimer = setTimeout(() => { if (!queue.length && !syncing) loadFresh(); }, 60000);
     } else {
       $('loading').innerHTML = `<div class="card" style="text-align:left">⚠️ 불러오기 실패<div class="note" style="font-size:14px">${esc(e.message)}</div>
-        <div class="actions"><button class="btn" id="retryBtn">다시 시도</button><button class="btn ghost" id="fixBtn">웹앱 주소 바꾸기</button></div></div>`;
+        <div class="actions"><button class="btn" id="retryBtn">다시 시도</button></div></div>`;
       $('retryBtn').onclick = () => { $('loading').textContent = '불러오는 중…'; loadFresh(); };
-      $('fixBtn').onclick = () => openSettings(e.message);
-      if (fixable) openSettings(e.message);
     }
   }
 
-  // 1) 기기에 저장된 지난 데이터를 바로 보여 주고  2) 서버에서 최신 데이터를 받아 바꿈
-  function loadFresh() {
+  // 1) 기기에 저장된 지난 데이터를 바로 보여 주고  2) Supabase에서 최신 데이터를 받아 바꿈 (실패하면 2번 더)
+  async function loadFresh() {
     if (DATA) setSync('최신 기록 확인 중…');
-    const t0 = Date.now();
-    let attempt = 1;
-    const tick = setInterval(() => {
-      const sec = Math.round((Date.now() - t0) / 1000);
-      const retry = attempt > 1 ? ` · 요청 ${attempt}개 동시에 기다리는 중` : '';
-      const msg = `불러오는 중… ${sec}초${retry}` + (sec >= 8 && attempt === 1 ? ' (구글 서버가 깨어나는 중일 수 있어요)' : '');
-      if (DATA) setSync(`최신 기록 확인 중… ${sec}초${retry}`); else $('loading').textContent = msg;
-    }, 1000);
-    return api('get', null, n => { attempt = n; }).finally(() => clearInterval(tick)).then(res => {
-      const first = !DATA;
-      // 캐시를 보여 주는 사이에 저장한 게 있으면 그 결과가 더 최신이므로 덮지 않음
-      if (!queue.length && !syncing) { DATA = res.data; renderAll(); saveLocal(); }
-      if (first) { $('loading').classList.add('hidden'); resetForm(); showTab('stats'); }
-      if (!queue.length && !syncing) setSync('');
-    }).catch(showLoadError);
+    let lastError;
+    for (let i = 0; i < 3; i++) {
+      try {
+        const trips = (await db.list()).map(rowToTrip);
+        const first = !DATA;
+        if (!queue.length && !syncing) { DATA = freshData(trips); renderAll(); saveLocal(); }
+        if (first) { $('loading').classList.add('hidden'); resetForm(); showTab('stats'); }
+        if (!queue.length && !syncing) setSync('');
+        return;
+      } catch (e) {
+        lastError = e;
+        if (!['timeout', 'network', 'transient'].includes(e.kind)) break;
+        await new Promise(r => setTimeout(r, 1500 * (i + 1)));
+      }
+    }
+    showLoadError(lastError);
   }
 
   const cached = loadLocal();
-  if (cached && cached.family && cached.trips) {
-    DATA = cached; $('loading').classList.add('hidden'); renderAll(); resetForm(); showTab('stats');
+  if (cached && cached.trips) {
+    DATA = freshData(cached.trips);   // 가족·나라 목록은 항상 최신 파일 기준
+    $('loading').classList.add('hidden'); renderAll(); resetForm(); showTab('stats');
   }
   loadFresh();
   if (queue.length) { setSync(`저장 중… (${queue.length})`); runQueue(); }   // 지난번에 못 끝낸 저장 이어서
