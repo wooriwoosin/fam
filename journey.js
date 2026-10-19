@@ -267,7 +267,7 @@ function renderJourney() {
     <div class="jhead">
       <button class="btn ghost small" id="jBack">← 목록</button>
       <div class="jtitle"><h2 id="jTitle" title="눌러서 이름 바꾸기">${esc(i.title)} <span class="edit">✎</span></h2>
-        <div class="who">${dot(i.dep)} ~ ${dot(i.ret)}${i.days ? ` · ${i.days - 1}박${i.days}일` : ''}${i.planned ? ` · <b style="color:var(--accent)">${dday(i.dep)}</b>` : ''}</div></div>
+        <div class="who">${dot(i.dep)} ~ ${dot(i.ret)}${i.days ? ` · ${i.days - 1}박${i.days}일` : ''}${i.planned ? ` · <b style="color: var(--accent-text)">${dday(i.dep)}</b>` : ''}</div></div>
     </div>
     <div class="subtabs">${subs.map(([k, n]) => `<button class="pill ${journeySub === k ? 'on' : ''}" data-sub="${k}">${n}</button>`).join('')}</div>
     <div id="jBody"></div>`;
