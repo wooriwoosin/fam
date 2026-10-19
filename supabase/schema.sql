@@ -138,3 +138,18 @@ begin
     execute format('grant select, insert, update, delete on public.%s to anon, authenticated', t);
   end loop;
 end $$;
+
+-- ═════════════════════════════════════════════════════════════════════
+-- 같은 날 안에서의 순서 (가계부·장소 "순서 바꾸기") — 다시 실행해도 안전
+-- 기존 기록은 입력한 순서(created_at)대로 1000, 2000, 3000 … 으로 채움
+-- ═════════════════════════════════════════════════════════════════════
+alter table public.expenses add column if not exists sort_order double precision;
+alter table public.places   add column if not exists sort_order double precision;
+
+update public.expenses e set sort_order = s.n
+  from (select id, row_number() over (partition by journey_id, paid_on order by created_at, id) * 1000 as n from public.expenses) s
+ where e.id = s.id and e.sort_order is null;
+
+update public.places p set sort_order = s.n
+  from (select id, row_number() over (partition by journey_id, visited_on order by created_at, id) * 1000 as n from public.places) s
+ where p.id = s.id and p.sort_order is null;

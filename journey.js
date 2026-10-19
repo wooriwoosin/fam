@@ -14,6 +14,27 @@ let returnToJourney = null;       // 일행 기록 수정 뒤 돌아갈 여행
 let placeDayFilter = '';          // 장소 탭 날짜 필터
 let editingExpense = null;        // 지출 폼에서 고치는 중인 지출 (새 지출이면 id만 새로)
 let editingPlace = null;
+let reorder = null;               // "순서 바꾸기" 중인 날짜 묶음 { kind: 'exp' | 'place', group }
+let reorderDirty = new Set();     // 순서가 바뀐 항목 ID (완료 누르면 저장)
+
+/* ── 같은 날 안에서의 순서: 기본은 입력한 순서, "순서 바꾸기"로 고침 ── */
+const byDayOrder = (a, b) => ((a.sortOrder == null ? Infinity : a.sortOrder) - (b.sortOrder == null ? Infinity : b.sortOrder)) ||
+  (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0) || (a.id < b.id ? -1 : 1);
+const expDate = e => e.paidOn;
+const placeDate = p => p.visitedOn || '9999';
+const byDateThenOrder = dateOf => (a, b) => (dateOf(a) < dateOf(b) ? -1 : dateOf(a) > dateOf(b) ? 1 : byDayOrder(a, b));
+/** 그 날에 순서 번호가 없는 항목이 있으면(예전 기록 등) 지금 보이는 순서대로 번호를 매기고 저장 */
+function fillDayOrders(kind, list, dateOf, date, selfId) {
+  const day = list.filter(x => dateOf(x) === date && x.id !== selfId).sort(byDayOrder);
+  if (!day.some(x => x.sortOrder == null) || DATA.noSortOrder) return;
+  day.forEach((x, n) => { x.sortOrder = (n + 1) * 1000; });
+  saveRows(kind === 'exp' ? 'expenses' : 'places', day.map(kind === 'exp' ? expenseToRow : placeToRow));
+}
+/** 그 날의 맨 뒤 순서 번호 */
+function nextOrder(list, dateOf, date, selfId) {
+  const same = list.filter(x => dateOf(x) === date && x.id !== selfId);
+  return same.reduce((m, x) => Math.max(m, x.sortOrder || 0), same.length * 1000) + 1000;
+}
 
 const WEEK = ['일', '월', '화', '수', '목', '금', '토'];
 const EXP_CATS = [
@@ -78,20 +99,24 @@ function rowToExpense(r) {
   return { id: String(r.id), journeyId: r.journey_id, paidOn: String(r.paid_on).slice(0, 10), category: r.category || 'etc',
     title: r.title || '', amount: Number(r.amount) || 0, currency: r.currency || 'KRW', fxRate: r.fx_rate == null ? null : Number(r.fx_rate),
     krw: Number(r.krw) || 0, krwManual: !!r.krw_manual, payer: r.payer || '', method: r.method || '', split: arr(r.split_with),
-    personal: !!r.personal, placeId: r.place_id || '', memo: r.memo || '' };
+    personal: !!r.personal, placeId: r.place_id || '', memo: r.memo || '',
+    sortOrder: r.sort_order == null ? null : Number(r.sort_order), createdAt: r.created_at || '' };
 }
 const expenseToRow = e => ({ id: e.id, journey_id: e.journeyId, paid_on: e.paidOn, category: e.category, title: e.title,
   amount: e.amount, currency: e.currency, fx_rate: e.fxRate, krw: Math.round(e.krw), krw_manual: !!e.krwManual, payer: e.payer,
-  method: e.method, split_with: e.split, personal: !!e.personal, place_id: e.placeId || null, memo: e.memo });
+  method: e.method, split_with: e.split, personal: !!e.personal, place_id: e.placeId || null, memo: e.memo,
+  ...(DATA.noSortOrder ? {} : { sort_order: e.sortOrder == null ? null : e.sortOrder }) });
 function rowToPlace(r) {
   return { id: String(r.id), journeyId: r.journey_id, visitedOn: r.visited_on ? String(r.visited_on).slice(0, 10) : '', name: r.name,
     category: r.category || 'etc', googlePlaceId: r.google_place_id || '', lat: r.lat == null ? null : Number(r.lat),
     lng: r.lng == null ? null : Number(r.lng), address: r.address || '', rating: r.rating == null ? null : Number(r.rating),
-    memo: r.memo || '', addedBy: r.added_by || '' };
+    memo: r.memo || '', addedBy: r.added_by || '',
+    sortOrder: r.sort_order == null ? null : Number(r.sort_order), createdAt: r.created_at || '' };
 }
 const placeToRow = p => ({ id: p.id, journey_id: p.journeyId, visited_on: p.visitedOn || null, name: p.name, category: p.category,
   google_place_id: p.googlePlaceId || null, lat: p.lat, lng: p.lng, address: p.address || '', rating: p.rating || null,
-  memo: p.memo || '', added_by: p.addedBy || '' });
+  memo: p.memo || '', added_by: p.addedBy || '',
+  ...(DATA.noSortOrder ? {} : { sort_order: p.sortOrder == null ? null : p.sortOrder }) });
 function rowToCheck(r) { return { id: String(r.id), journeyId: r.journey_id, from: r.from_person, to: r.to_person, amount: Number(r.amount) || 0, checkedAt: r.checked_at || '' }; }
 const checkToRow = c => ({ id: c.id, journey_id: c.journeyId, from_person: c.from, to_person: c.to, amount: Math.round(c.amount) });
 
@@ -271,13 +296,13 @@ function renderJourney() {
     </div>
     <div class="subtabs">${subs.map(([k, n]) => `<button class="pill ${journeySub === k ? 'on' : ''}" data-sub="${k}">${n}</button>`).join('')}</div>
     <div id="jBody"></div>`;
-  $('jBack').onclick = () => showTab('trips');
+  $('jBack').onclick = () => { if (reorder) finishReorder(reorder.kind); showTab('trips'); };
   $('jTitle').onclick = () => {
     const name = prompt('여행 이름 (비우면 자동으로 지어져요)', j.title || i.title);
     if (name === null) return;
     j.title = name.trim(); saveRows('journeys', [journeyToRow(j)]); afterLocalChange();
   };
-  box.querySelectorAll('[data-sub]').forEach(b => b.onclick = () => { journeySub = b.dataset.sub; editingExpense = editingPlace = null; renderJourney(); });
+  box.querySelectorAll('[data-sub]').forEach(b => b.onclick = () => { if (reorder) finishReorder(reorder.kind); journeySub = b.dataset.sub; editingExpense = editingPlace = null; renderJourney(); });
   ({ overview: renderOverview, money: renderMoney, places: renderPlaces, settle: renderSettle })[journeySub](i);
 }
 
@@ -357,7 +382,7 @@ function dayLabel(iso, i, forPlaces) {
 function renderMoney(i) {
   const j = i.journey;
   if (editingExpense) return renderExpenseForm(i);
-  const ex = (DATA.expenses || []).filter(e => e.journeyId === j.id).sort((a, b) => (a.paidOn < b.paidOn ? -1 : a.paidOn > b.paidOn ? 1 : 0));
+  const ex = (DATA.expenses || []).filter(e => e.journeyId === j.id).sort(byDateThenOrder(expDate));
   const total = ex.reduce((n, e) => n + e.krw, 0);
   const n = Math.max(i.participants.length, 1);
   const byCat = EXP_CATS.map(c => ({ c, krw: ex.filter(e => e.category === c.key).reduce((s, e) => s + e.krw, 0) })).filter(x => x.krw).sort((a, b) => b.krw - a.krw);
@@ -388,9 +413,12 @@ function renderMoney(i) {
       const sub = g.items.reduce((s, e) => s + e.krw, 0);
       const local = {};
       g.items.filter(e => e.currency !== 'KRW').forEach(e => { local[e.currency] = (local[e.currency] || 0) + e.amount; });
-      return `<div class="card day">
-        <div class="dayhead"><b>${g.label}</b><span><b>${won(sub)}</b>${Object.keys(local).length ? ' <span class="note">' + Object.entries(local).map(([c, a]) => money(a, c)).join(' · ') + '</span>' : ''}</span></div>
-        ${g.items.map(e => `<div class="erow" data-exp="${esc(e.id)}">
+      const on = reorder && reorder.kind === 'exp' && reorder.group === k;
+      return `<div class="card day ${on ? 'reordering' : ''}" data-group="${k}">
+        <div class="dayhead"><b>${g.label}</b><span><b>${won(sub)}</b>${Object.keys(local).length ? ' <span class="note">' + Object.entries(local).map(([c, a]) => money(a, c)).join(' · ') + '</span>' : ''}</span>
+          ${reorderButton('exp', k, g.items.length)}</div>
+        ${g.items.map((e, n) => `<div class="erow" ${on ? `data-rid="${esc(e.id)}" data-date="${e.paidOn}"` : `data-exp="${esc(e.id)}"`}>
+          ${on ? reorderControls(g.items, n, expDate) : ''}
           <span class="eicon">${expCat(e.category).emoji}</span>
           <div style="flex:1;min-width:0"><div>${esc(e.title || expCat(e.category).name)}${e.personal ? ' <span class="tag dup">개인</span>' : ''}</div>
             <div class="who">${[e.payer && esc(e.payer) + ' 결제', e.method && esc(e.method), e.placeId && '📍 ' + esc(placeName(e.placeId))].filter(Boolean).join(' · ')}</div></div>
@@ -400,8 +428,85 @@ function renderMoney(i) {
     }).join('') || '<div class="card note">아직 지출 기록이 없어요. 항공·숙소처럼 여행 전에 결제한 것도 넣어 주세요.</div>'}`;
   $('expAdd').onclick = () => { editingExpense = newExpense(i); renderJourney(); };
   $('jBody').querySelectorAll('[data-exp]').forEach(el => el.onclick = () => {
-    editingExpense = Object.assign({}, DATA.expenses.find(e => e.id === el.dataset.exp)); renderJourney();
+    const e = DATA.expenses.find(x => x.id === el.dataset.exp);
+    editingExpense = Object.assign({}, e, { origPaidOn: e.paidOn }); renderJourney();
   });
+  wireReorder('exp', ex, expDate);
+}
+
+/* ── 순서 바꾸기 (가계부·장소 공통) ── */
+function reorderButton(kind, group, count) {
+  if (count < 2 && !(reorder && reorder.kind === kind && reorder.group === group)) return '';
+  const on = reorder && reorder.kind === kind && reorder.group === group;
+  return `<button class="btn ${on ? '' : 'ghost'} small" data-reorder="${kind}|${group}">${on ? '완료' : '↕ 순서 바꾸기'}</button>`;
+}
+/** ☰ 손잡이(끌어서 옮기기) + ▲▼ (같은 날짜 안에서만) */
+function reorderControls(items, n, dateOf) {
+  const up = n > 0 && dateOf(items[n - 1]) === dateOf(items[n]);
+  const down = n < items.length - 1 && dateOf(items[n + 1]) === dateOf(items[n]);
+  return `<span class="drag" title="끌어서 옮기기" aria-hidden="true">☰</span>
+    <span class="rbtns"><button class="rbtn" data-move="-1" ${up ? '' : 'disabled'} aria-label="위로">▲</button><button class="rbtn" data-move="1" ${down ? '' : 'disabled'} aria-label="아래로">▼</button></span>`;
+}
+/** 화면에 보이는 순서대로 그 날짜 항목들의 순서 번호를 1000, 2000 … 으로 다시 매김 */
+function renumber(list, dateOf, date, orderedIds) {
+  orderedIds.forEach((id, n) => {
+    const x = list.find(y => y.id === id);
+    if (x && dateOf(x) === date && x.sortOrder !== (n + 1) * 1000) { x.sortOrder = (n + 1) * 1000; reorderDirty.add(id); }
+  });
+}
+function finishReorder(kind) {
+  const list = kind === 'exp' ? DATA.expenses : DATA.places;
+  const changed = list.filter(x => reorderDirty.has(x.id));
+  if (changed.length) saveRows(kind === 'exp' ? 'expenses' : 'places', changed.map(kind === 'exp' ? expenseToRow : placeToRow));
+  reorder = null; reorderDirty = new Set();
+  afterLocalChange();
+  if (changed.length) toast('순서를 저장했어요');
+}
+function wireReorder(kind, items, dateOf) {
+  $('jBody').querySelectorAll('[data-reorder]').forEach(b => b.onclick = ev => {
+    ev.stopPropagation();
+    const [k, group] = b.dataset.reorder.split('|');
+    if (DATA.noSortOrder) return toast('순서 바꾸기를 쓰려면 Supabase에서 schema.sql을 다시 실행해 주세요');
+    if (reorder && reorder.kind === k && reorder.group === group) return finishReorder(k);
+    if (reorder) finishReorder(reorder.kind);
+    reorder = { kind: k, group }; reorderDirty = new Set(); renderJourney();
+  });
+  if (!reorder || reorder.kind !== kind) return;
+  const box = $('jBody').querySelector(`.day[data-group="${reorder.group}"]`);
+  if (!box) return;
+  const idsOn = date => [...box.querySelectorAll('[data-rid]')].filter(r => r.dataset.date === date).map(r => r.dataset.rid);
+  // ▲▼
+  box.querySelectorAll('[data-move]').forEach(b => b.onclick = ev => {
+    ev.stopPropagation();
+    const row = b.closest('[data-rid]');
+    const ids = idsOn(row.dataset.date);
+    const at = ids.indexOf(row.dataset.rid), to = at + Number(b.dataset.move);
+    if (to < 0 || to >= ids.length) return;
+    [ids[at], ids[to]] = [ids[to], ids[at]];
+    renumber(items, dateOf, row.dataset.date, ids);
+    renderJourney();
+  });
+  // ☰ 끌어서 옮기기 (손가락·마우스 모두)
+  box.querySelectorAll('.drag').forEach(h => h.addEventListener('pointerdown', ev => {
+    ev.preventDefault();
+    const row = h.closest('[data-rid]');
+    const date = row.dataset.date;
+    row.classList.add('dragging');
+    const move = e => {
+      const over = document.elementFromPoint(e.clientX, e.clientY);
+      const target = over && over.closest('[data-rid]');
+      if (!target || target === row || target.dataset.date !== date || !box.contains(target)) return;
+      const r = target.getBoundingClientRect();
+      box.insertBefore(row, e.clientY < r.top + r.height / 2 ? target : target.nextSibling);
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', up);
+      row.classList.remove('dragging');
+      renumber(items, dateOf, date, idsOn(date));
+      renderJourney();
+    };
+    window.addEventListener('pointermove', move); window.addEventListener('pointerup', up); window.addEventListener('pointercancel', up);
+  }));
 }
 
 function defaultCurrency(i) {
@@ -550,7 +655,12 @@ function renderExpenseForm(i) {
     if (!e.split.length) e.split = i.participants.slice();
     const saved = { id: e.id, journeyId: e.journeyId, paidOn: e.paidOn, category: e.category, title: e.title, amount,
       currency: e.currency, fxRate: e.currency === 'KRW' ? 1 : e.fxRate, krw: Math.round(krw), krwManual: e.currency !== 'KRW' && !!e.krwManual,
-      payer: e.payer, method: e.method, split: e.split, personal: e.personal, placeId: e.placeId || '', memo: e.memo };
+      payer: e.payer, method: e.method, split: e.split, personal: e.personal, placeId: e.placeId || '', memo: e.memo,
+      createdAt: e.createdAt || new Date().toISOString(),
+      // 새 지출이거나 날짜를 바꿨으면 그 날의 맨 뒤로
+      sortOrder: e.isNew || e.paidOn !== e.origPaidOn || e.sortOrder == null
+        ? (fillDayOrders('exp', (DATA.expenses || []).filter(x => x.journeyId === e.journeyId), expDate, e.paidOn, e.id),
+           nextOrder((DATA.expenses || []).filter(x => x.journeyId === e.journeyId), expDate, e.paidOn, e.id)) : e.sortOrder };
     DATA.expenses = (DATA.expenses || []).filter(x => x.id !== saved.id).concat(saved);
     saveRows('expenses', [expenseToRow(saved)]);
     if (saved.currency !== 'KRW') store.set('famCur:' + i.journey.id, saved.currency);
@@ -585,7 +695,7 @@ function renderPlaces(i) {
   if (editingPlace) return renderPlaceForm(i);
   const all = (DATA.places || []).filter(p => p.journeyId === j.id);
   const days = [...new Set(all.map(p => p.visitedOn).filter(Boolean))].sort();
-  const shown = all.filter(p => !placeDayFilter || p.visitedOn === placeDayFilter);
+  const shown = all.filter(p => !placeDayFilter || p.visitedOn === placeDayFilter).sort(byDateThenOrder(placeDate));
   const spentAt = id => (DATA.expenses || []).filter(e => e.placeId === id).reduce((n, e) => n + e.krw, 0);
   const groups = {};
   shown.forEach(p => { const k = p.visitedOn || '9999'; (groups[k] = groups[k] || []).push(p); });
@@ -599,29 +709,34 @@ function renderPlaces(i) {
         ${CFG.googleMapsKey ? '<button class="btn ghost" id="pNear">📍 지금 여기 근처</button>' : ''}
       </div>
     </div>
-    ${Object.keys(groups).sort().map(k => `<div class="card day">
-      <div class="dayhead"><b>${k === '9999' ? '날짜 미정' : dayLabel(k, i, true).label}</b><span class="note">${groups[k].length}곳</span></div>
-      ${groups[k].map(p => `<div class="erow">
+    ${Object.keys(groups).sort().map(k => { const on = reorder && reorder.kind === 'place' && reorder.group === k; return `<div class="card day ${on ? 'reordering' : ''}" data-group="${k}">
+      <div class="dayhead"><b>${k === '9999' ? '날짜 미정' : dayLabel(k, i, true).label}</b><span class="note">${groups[k].length}곳</span>${reorderButton('place', k, groups[k].length)}</div>
+      ${groups[k].map((p, n) => `<div class="erow" ${on ? `data-rid="${esc(p.id)}" data-date="${k}"` : ''}>
+        ${on ? reorderControls(groups[k], n, placeDate) : ''}
         <span class="eicon" style="box-shadow:inset 0 0 0 2px ${placeCat(p.category).color}">${placeCat(p.category).emoji}</span>
-        <div style="flex:1;min-width:0" data-place="${esc(p.id)}">
+        <div style="flex:1;min-width:0" ${on ? '' : `data-place="${esc(p.id)}"`}>
           <div><b>${esc(p.name)}</b> ${p.rating ? `<span class="stars" aria-label="별점 ${p.rating}">${'★'.repeat(p.rating)}<span class="off">${'★'.repeat(5 - p.rating)}</span></span>` : ''}</div>
           <div class="who">${[placeCat(p.category).name, p.addedBy && esc(p.addedBy), spentAt(p.id) && '💰 ' + won(spentAt(p.id))].filter(Boolean).join(' · ')}</div>
           ${p.memo ? `<div class="memo">${esc(p.memo)}</div>` : ''}
         </div>
-        <div class="pact"><a class="btn ghost small" href="${mapsLink(p)}" target="_blank" rel="noopener">지도</a>
-          <button class="btn ghost small" data-spend="${esc(p.id)}" title="여기서 쓴 돈 기록">＋💰</button></div>
+        ${on ? '' : `<div class="pact"><a class="btn ghost small" href="${mapsLink(p)}" target="_blank" rel="noopener">지도</a>
+          <button class="btn ghost small" data-spend="${esc(p.id)}" title="여기서 쓴 돈 기록">＋💰</button></div>`}
       </div>`).join('')}
-    </div>`).join('') || '<div class="card note">아직 기록한 장소가 없어요. 맛집·카페·관광지를 남겨 보세요.</div>'}`;
+    </div>`; }).join('') || '<div class="card note">아직 기록한 장소가 없어요. 맛집·카페·관광지를 남겨 보세요.</div>'}`;
   if ($('pDays')) $('pDays').querySelectorAll('[data-day]').forEach(b => b.onclick = () => { placeDayFilter = b.dataset.day; renderJourney(); });
   $('pAdd').onclick = () => { editingPlace = newPlace(i); renderJourney(); };
   if ($('pNear')) $('pNear').onclick = () => nearbyPlaces(i);
-  $('jBody').querySelectorAll('[data-place]').forEach(el => el.onclick = () => { editingPlace = Object.assign({}, all.find(p => p.id === el.dataset.place)); renderJourney(); });
+  $('jBody').querySelectorAll('[data-place]').forEach(el => el.onclick = () => {
+    const p = all.find(x => x.id === el.dataset.place);
+    editingPlace = Object.assign({}, p, { origVisitedOn: p.visitedOn }); renderJourney();
+  });
+  wireReorder('place', all.slice().sort(byDateThenOrder(placeDate)), placeDate);
   $('jBody').querySelectorAll('[data-spend]').forEach(b => b.onclick = () => {
     const p = all.find(x => x.id === b.dataset.spend);
     editingExpense = newExpense(i, { placeId: p.id, title: p.name, category: placeCat(p.category).exp, paidOn: p.visitedOn || todayIso() });
     journeySub = 'money'; renderJourney();
   });
-  if (CFG.googleMapsKey) drawPlacesMap(shown, i);
+  if (CFG.googleMapsKey && !reorder) drawPlacesMap(shown, i);
 }
 
 async function drawPlacesMap(list, i) {
@@ -707,7 +822,13 @@ function renderPlaceForm(i) {
   $('pSave').onclick = () => {
     read();
     if (!p.name) return toast('장소 이름을 넣어 주세요');
-    const saved = Object.assign({}, p); delete saved.isNew;
+    const saved = Object.assign({}, p, { createdAt: p.createdAt || new Date().toISOString() });
+    // 새 장소이거나 날짜를 바꿨으면 그 날의 맨 뒤로
+    if (p.isNew || p.visitedOn !== p.origVisitedOn || p.sortOrder == null) {
+      fillDayOrders('place', (DATA.places || []).filter(x => x.journeyId === p.journeyId), placeDate, placeDate(p), p.id);
+      saved.sortOrder = nextOrder((DATA.places || []).filter(x => x.journeyId === p.journeyId), placeDate, placeDate(p), p.id);
+    }
+    delete saved.isNew; delete saved.origVisitedOn;
     DATA.places = (DATA.places || []).filter(x => x.id !== saved.id).concat(saved);
     saveRows('places', [placeToRow(saved)]); store.set('famLastAddedBy', saved.addedBy);
     editingPlace = null; afterLocalChange(); toast('저장했어요 📍');
@@ -846,7 +967,7 @@ function renderSpendStats() {
 
 /* ───────── 가계부 내려받기 (CSV) ───────── */
 function exportExpensesCsv() {
-  const ex = (DATA.expenses || []).slice().sort((a, b) => (a.paidOn < b.paidOn ? -1 : 1));
+  const ex = (DATA.expenses || []).slice().sort(byDateThenOrder(expDate));
   if (!ex.length) return toast('내려받을 가계부가 없어요');
   const q = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
   const title = id => { const j = getJourney(id); return j ? journeyInfo(j).title : ''; };

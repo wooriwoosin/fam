@@ -172,6 +172,14 @@
   .settle.done span:first-of-type { color: var(--muted); }
   .settle.done b { text-decoration: line-through; }
   tr.jlink { cursor: pointer; }
+  .card.day.reordering { box-shadow: 0 0 0 2px var(--accent); }
+  .reordering .erow { cursor: default; }
+  .dayhead .btn.small { margin-left: auto; }
+  .drag { font-size: 18px; color: var(--muted); cursor: grab; touch-action: none; padding: 6px 4px; user-select: none; }
+  .erow.dragging { background: var(--accent-soft); border-radius: 10px; opacity: .9; }
+  .rbtns { display: flex; flex-direction: column; gap: 2px; }
+  .rbtn { border: 1px solid var(--line); background: #fff; border-radius: 6px; font-size: 10px; line-height: 1; padding: 4px 6px; cursor: pointer; color: var(--text); }
+  .rbtn:disabled { opacity: .3; cursor: default; }
   .loading { text-align: center; color: var(--muted); padding: 40px 0; }
 </style>
 </head>
@@ -389,8 +397,12 @@
       return Object.assign(freshData(trips.map(rowToTrip)), { needsSchema: true });
     }
     const [trips, journeys, expenses, places, checks] = all;
-    return freshData(trips.map(rowToTrip), { journeys: journeys.map(rowToJourney), expenses: expenses.map(rowToExpense),
-                                            places: places.map(rowToPlace), checks: checks.map(rowToCheck) });
+    // '순서' 칸(schema.sql 3단계)이 있는지 확인. 없으면 순서 없이 저장 (저장이 실패하지 않게)
+    let noSortOrder = false;
+    try { await Promise.all([rest('GET', 'expenses?select=sort_order&limit=1'), rest('GET', 'places?select=sort_order&limit=1')]); }
+    catch (e) { if (['config', 'server'].includes(e.kind)) noSortOrder = true; else throw e; }
+    return Object.assign(freshData(trips.map(rowToTrip), { journeys: journeys.map(rowToJourney), expenses: expenses.map(rowToExpense),
+                                            places: places.map(rowToPlace), checks: checks.map(rowToCheck) }), { noSortOrder });
   }
 
   /** DB 줄 ↔ 화면 여행 */
@@ -410,7 +422,8 @@
   function freshData(trips, more) {
     const m = more || {};
     return { family: FAMILY, countries: COUNTRIES, cities: CITIES, trips: trips.sort(byDepDesc),
-             journeys: m.journeys || [], expenses: m.expenses || [], places: m.places || [], checks: m.checks || [] };
+             journeys: m.journeys || [], expenses: m.expenses || [], places: m.places || [], checks: m.checks || [],
+             needsSchema: !!m.needsSchema, noSortOrder: !!m.noSortOrder };   // 캐시에서 다시 열 때도 DB 상태 표시 유지
   }
   const byDepDesc = (a, b) => (a.dep < b.dep ? 1 : a.dep > b.dep ? -1 : a.person.localeCompare(b.person, 'ko'));
 
