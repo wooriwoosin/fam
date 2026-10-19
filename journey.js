@@ -287,7 +287,7 @@ function renderJourney() {
   if (!j || !membersOf(j.id).length) { box.innerHTML = '<div class="card note">이 여행에 일행 기록이 없어요. <a href="#" id="jBack">← 여행 목록</a></div>';
     $('jBack').onclick = e => { e.preventDefault(); showTab('trips'); }; return; }
   const i = journeyInfo(j);
-  const subs = [['overview', '개요'], ['money', '💰 가계부'], ['places', '📍 장소'], ['settle', '💸 정산']];
+  const subs = [['overview', '개요'], ['places', '📍 일정'], ['money', '💰 가계부'], ['settle', '💸 정산']];
   box.innerHTML = `
     <div class="jhead">
       <button class="btn ghost small" id="jBack">← 목록</button>
