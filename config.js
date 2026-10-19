@@ -7,8 +7,8 @@
  * ⚠️ service_role / sb_secret_ 키와 DB 비밀번호는 절대 넣지 마세요.
  */
 window.FAM_CONFIG = {
-  supabaseUrl: '',
-  supabaseKey: '',
+  supabaseUrl: 'https://iwfiilgjiqkdsuybqwwk.supabase.co',
+  supabaseKey: 'sb_publishable_q3SLb7fToGXt9J4o7tkYOw_QArw7mQ9',
 
   family: [
     { name: '전정순', role: '엄마' },
