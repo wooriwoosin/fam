@@ -109,6 +109,7 @@
   .tag.dup { background: #eef1f6; color: var(--muted); }
   .tag.warn { background: #ffe1e1; color: var(--danger); }
   .privacy { background: #f0f5ff; border-radius: 10px; padding: 10px 12px; font-size: 13px; color: #34405a; margin-bottom: 4px; }
+  .jhead > .btn { white-space: nowrap; flex: 0 0 auto; }
   #setBtn { float: right; border: 0; background: none; font-size: 18px; cursor: pointer; padding: 0 2px; }
   #sync.clickable { cursor: pointer; text-decoration: underline; }
   #sync { font-size: 12px; font-weight: 400; opacity: .85; margin-left: 6px; vertical-align: middle; }
@@ -126,6 +127,47 @@
   .tag.plan { background: var(--accent-soft); color: var(--accent); }
   .trip.planned { background: #f5f8ff; margin: 0 -16px; padding: 12px 16px; }
   .sectionhead { font-size: 13px; color: var(--muted); font-weight: 600; margin: 4px 0 2px; }
+  /* 여행 상세 · 가계부 · 장소 · 정산 */
+  .btn.small { padding: 6px 10px; font-size: 13px; border-radius: 8px; }
+  .jhead { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 10px; }
+  .jtitle h2 { margin: 0; font-size: 19px; cursor: pointer; }
+  .jtitle .edit { font-size: 13px; color: var(--muted); font-weight: 400; }
+  .subtabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+  h3.ch { margin: 0 0 10px; font-size: 16px; }
+  h3.ch .note { font-weight: 400; margin-left: 4px; }
+  .mrow { display: flex; gap: 8px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .mrow:last-of-type { border-bottom: 0; }
+  details.near { margin-top: 8px; } details.near summary { cursor: pointer; color: var(--accent); font-size: 14px; }
+  .guest { color: #6b4fbf; }
+  .hero { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; margin-bottom: 10px; }
+  .hero b { font-size: 28px; letter-spacing: -.5px; }
+  .bars { display: grid; gap: 6px; margin: 8px 0; }
+  .bar { display: grid; grid-template-columns: 96px 1fr auto; gap: 8px; align-items: center; font-size: 13px; }
+  .bar .bt { height: 10px; background: #eef1f6; border-radius: 4px; overflow: hidden; }
+  .bar .bt i { display: block; height: 100%; background: var(--accent); border-radius: 0 4px 4px 0; }
+  .bar .bv { text-align: right; white-space: nowrap; }
+  .card.day { padding-top: 12px; }
+  .dayhead { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .erow { display: flex; gap: 10px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .erow:last-child { border-bottom: 0; }
+  .eicon { width: 34px; height: 34px; border-radius: 10px; background: #f3f5f9; display: grid; place-items: center; font-size: 17px; flex: 0 0 auto; }
+  .eamt { text-align: right; white-space: nowrap; font-weight: 600; }
+  .eamt .who { font-weight: 400; }
+  .pact { display: flex; flex-direction: column; gap: 4px; }
+  .jmap { height: 300px; border-radius: 12px; overflow: hidden; background: #eef1f6; }
+  .legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: -1px; }
+  .stars { color: #e5a100; font-size: 13px; letter-spacing: 1px; } .stars .off { color: #d9dde5; }
+  .rate button { border: 0; background: none; font-size: 26px; color: #d9dde5; cursor: pointer; padding: 0 2px; }
+  .rate button.on { color: #e5a100; } .rate .clear { font-size: 13px; color: var(--muted); }
+  .psearch gmp-place-autocomplete, .psearch gmp-placeautocomplete { width: 100%; }
+  label.chk { display: flex; gap: 8px; align-items: center; color: var(--text); font-size: 14px; margin-top: 14px; }
+  select { width: 100%; padding: 10px; border: 1px solid var(--line); border-radius: 10px; font-size: 15px; background: #fff; font-family: inherit; }
+  .settle { display: flex; gap: 10px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); color: var(--text); font-size: 15px; margin: 0; cursor: pointer; }
+  .settle input { width: 20px; height: 20px; }
+  .settle.done span:first-of-type { color: var(--muted); }
+  .settle.done b { text-decoration: line-through; }
+  tr.jlink { cursor: pointer; }
   .loading { text-align: center; color: var(--muted); padding: 40px 0; }
 </style>
 </head>
@@ -150,9 +192,10 @@
     <div class="note" id="setInfo" style="margin-top:0"></div>
     <label>백업</label>
     <div class="actions" style="margin-top:0">
-      <button class="btn" id="exportBtn">📥 엑셀로 내려받기</button>
+      <button class="btn" id="exportBtn">📥 여행 기록 내려받기</button>
+      <button class="btn ghost" id="exportExpBtn">💰 가계부 내려받기</button>
     </div>
-    <div class="note">모든 여행 기록을 엑셀(CSV) 파일로 저장해요. 가끔 내려받아 두면 그게 백업이에요.</div>
+    <div class="note">엑셀(CSV) 파일로 저장해요. 가끔 내려받아 두면 그게 백업이에요.</div>
     <label>예전 구글 시트에서 옮겨오기 (한 번만)</label>
     <div class="actions" style="margin-top:0">
       <button class="btn ghost" id="migrateBtn">구글 시트 기록 옮겨오기</button>
@@ -175,7 +218,11 @@
         <div style="overflow-x:auto"><table id="yearTable"></table></div>
       </div>
     </div>
+    <div class="card hidden" id="spendCard" style="margin-top:12px"></div>
   </section>
+
+  <!-- 여행 상세 (journey.js) -->
+  <section id="tab-journey" class="hidden"><div id="journeyView"></div></section>
 
   <!-- 여행 목록 -->
   <section id="tab-trips" class="hidden">
@@ -286,7 +333,8 @@
     constructor(message, kind) { super(message); this.kind = kind; }
   }
 
-  async function rest(method, query, body, prefer) {
+  /** path: '테이블?쿼리' (예: 'trips?select=*') */
+  async function rest(method, path, body, prefer) {
     if (!configured()) throw new ApiError('config.js에 Supabase 주소와 키를 넣어 주세요', 'config');
     const key = CFG.supabaseKey;
     const headers = { apikey: key, 'Content-Type': 'application/json' };
@@ -296,7 +344,7 @@
     const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
     let res, text;
     try {
-      res = await fetch(CFG.supabaseUrl.replace(/\/+$/, '') + '/rest/v1/trips' + query,
+      res = await fetch(CFG.supabaseUrl.replace(/\/+$/, '') + '/rest/v1/' + path,
         { method, headers, body: body == null ? undefined : JSON.stringify(body), signal: ctrl.signal });
       text = await res.text();
     } catch (e) {
@@ -306,37 +354,59 @@
     if (res.ok) return text ? JSON.parse(text) : null;
     let msg = text;
     try { const j = JSON.parse(text); msg = j.message || j.msg || j.error || text; } catch (e) {}
-    if (res.status === 409) throw new ApiError('같은 사람·같은 출국일 기록이 이미 있어요', 'conflict');
+    if (res.status === 409) throw new ApiError(/^trips/.test(path) ? '같은 사람·같은 출국일 기록이 이미 있어요' : '이미 있는 기록이에요: ' + msg, 'conflict');
     if ([401, 403].includes(res.status)) throw new ApiError('Supabase 키가 맞지 않거나 권한이 없어요 (config.js 확인, schema.sql 실행 여부 확인): ' + msg, 'config');
-    if (res.status === 404) throw new ApiError('trips 테이블을 찾을 수 없어요. Supabase SQL Editor에서 schema.sql을 실행해 주세요: ' + msg, 'config');
+    if (res.status === 404) throw new ApiError(path.split('?')[0] + ' 테이블을 찾을 수 없어요. Supabase SQL Editor에서 schema.sql을 (다시) 실행해 주세요: ' + msg, 'config');
     if (res.status >= 500 || res.status === 429) throw new ApiError('Supabase 일시 오류 (' + res.status + '): ' + msg, 'transient');
     throw new ApiError('저장할 수 없는 값이에요 (' + res.status + '): ' + msg, 'server');
   }
 
   const enc = encodeURIComponent;
-  const db = {
-    list: () => rest('GET', '?select=id,person,dep,ret,countries,memo&order=dep.desc,person.asc&limit=10000'),
-    upsert: rows => rest('POST', '?on_conflict=id', rows, 'resolution=merge-duplicates,return=minimal'),
+  // 테이블별 읽기·덮어쓰기(upsert)·지우기. 모두 같은 ID로 다시 보내도 결과가 같아서 재시도에 안전
+  const table = name => ({
+    list: (select = '*') => rest('GET', `${name}?select=${select}&limit=10000`),
+    upsert: rows => rest('POST', `${name}?on_conflict=id`, rows, 'resolution=merge-duplicates,return=minimal'),
+    remove: id => rest('DELETE', `${name}?id=eq.` + enc(id), null, 'return=minimal'),
+  });
+  const db = Object.assign(table('trips'), {
+    list: () => rest('GET', 'trips?select=id,person,dep,ret,countries,memo,journey_id&order=dep.desc,person.asc&limit=10000'),
     // 같은 사람·같은 출국일이 이미 있으면 건너뜀 (증명서·옮겨오기). 실제로 들어간 줄만 돌려받음
-    insertNew: rows => rest('POST', '?on_conflict=person,dep&select=id', rows, 'resolution=ignore-duplicates,return=representation'),
-    update: (id, fields) => rest('PATCH', '?id=eq.' + enc(id), fields, 'return=minimal'),
-    remove: id => rest('DELETE', '?id=eq.' + enc(id), null, 'return=minimal'),
-  };
+    insertNew: rows => rest('POST', 'trips?on_conflict=person,dep&select=id', rows, 'resolution=ignore-duplicates,return=representation'),
+  });
+  /** 여행·묶음·가계부·장소·정산 체크를 한 번에 불러옴 */
+  async function loadAll() {
+    let all;
+    try {
+      all = await Promise.all([db.list(), table('journeys').list(), table('expenses').list(), table('places').list(), table('settle_checks').list()]);
+    } catch (e) {
+      // 새 테이블(schema.sql 2단계)을 아직 안 만들었으면: 기존 여행 기록만 불러오고 안내
+      if (!['config', 'server'].includes(e.kind)) throw e;
+      const trips = await rest('GET', 'trips?select=id,person,dep,ret,countries,memo&order=dep.desc,person.asc&limit=10000');
+      return Object.assign(freshData(trips.map(rowToTrip)), { needsSchema: true });
+    }
+    const [trips, journeys, expenses, places, checks] = all;
+    return freshData(trips.map(rowToTrip), { journeys: journeys.map(rowToJourney), expenses: expenses.map(rowToExpense),
+                                            places: places.map(rowToPlace), checks: checks.map(rowToCheck) });
+  }
 
   /** DB 줄 ↔ 화면 여행 */
   function rowToTrip(r) {
     const dep = String(r.dep || '').slice(0, 10), ret = r.ret ? String(r.ret).slice(0, 10) : '';
     return {
-      id: String(r.id), person: r.person, dep, ret, days: tripDays(dep, ret), memo: r.memo || '',
+      id: String(r.id), person: r.person, dep, ret, days: tripDays(dep, ret), memo: r.memo || '', journeyId: r.journey_id || '',
       countries: (Array.isArray(r.countries) ? r.countries : []).map(c => ({ name: String(c.name || ''), code: c.code || '', cities: (c.cities || []).map(String) })).filter(c => c.name),
     };
   }
   function tripToRow(t) {
-    return { id: t.id, person: t.person, dep: t.dep, ret: t.ret || null, memo: t.memo || '',
+    const row = { id: t.id, person: t.person, dep: t.dep, ret: t.ret || null, memo: t.memo || '',
              countries: t.countries.map(c => ({ name: c.name, code: c.code || '', cities: c.cities.slice() })) };
+    if (!(DATA && DATA.needsSchema)) row.journey_id = t.journeyId || null;   // 새 칸이 없는 DB엔 안 보냄
+    return row;
   }
-  function freshData(trips) {
-    return { family: FAMILY, countries: COUNTRIES, cities: CITIES, trips: trips.sort(byDepDesc) };
+  function freshData(trips, more) {
+    const m = more || {};
+    return { family: FAMILY, countries: COUNTRIES, cities: CITIES, trips: trips.sort(byDepDesc),
+             journeys: m.journeys || [], expenses: m.expenses || [], places: m.places || [], checks: m.checks || [] };
   }
   const byDepDesc = (a, b) => (a.dep < b.dep ? 1 : a.dep > b.dep ? -1 : a.person.localeCompare(b.person, 'ko'));
 
@@ -353,8 +423,10 @@
   function closeSettings() { $('settings').classList.add('hidden'); }
 
   function showTab(name) {
-    document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
-    ['stats', 'trips', 'form', 'cert'].forEach(t => $('tab-' + t).classList.toggle('hidden', t !== name));
+    document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === (name === 'journey' ? 'trips' : name)));
+    if (name !== 'form' && name !== 'journey') returnToJourney = null;
+    ['stats', 'trips', 'form', 'cert', 'journey'].forEach(t => $('tab-' + t).classList.toggle('hidden', t !== name));
+    if (name !== 'journey') currentJourneyId = null;
     document.querySelector('main').classList.toggle('wide', name === 'stats');
     window.scrollTo(0, 0);
   }
@@ -406,7 +478,7 @@
         </div>
         <div class="flags">${g.countries.map(c => `<span>${chip(c)} ${cityLine(c.cities)}</span>`).join('') || '<span class="note">나라 미정</span>'}</div>
       </div>`).join('');
-    $('upcoming').querySelectorAll('.up').forEach(el => el.onclick = () => editTrip(el.dataset.id));
+    $('upcoming').querySelectorAll('.up').forEach(el => el.onclick = () => openTripOrJourney(el.dataset.id));
     $('people').innerHTML = s.people.map(p => {
       const visited = Object.keys(p.visitCount).sort((a, b) => p.visitCount[b] - p.visitCount[a]);
       return `<div class="card person">
@@ -439,30 +511,8 @@
   }
 
   /* ── 여행 목록 ── */
-  function renderTrips() {
-    $('personFilter').innerHTML = [{ name: '' }].concat(DATA.family).map(f =>
-      `<button class="pill ${filterPerson === f.name ? 'on' : ''}" data-person="${esc(f.name)}">${f.name ? esc(f.name) : '전체'}</button>`).join('');
-    $('personFilter').querySelectorAll('button').forEach(b => b.onclick = () => { filterPerson = b.dataset.person; renderTrips(); });
-
-    const trips = DATA.trips.filter(t => !filterPerson || t.person === filterPerson);
-    const planned = trips.filter(isPlanned).sort((a, b) => (a.dep < b.dep ? -1 : 1));   // 가까운 순
-    const done = trips.filter(t => !isPlanned(t));
-    const row = t => `
-      <div class="trip ${isPlanned(t) ? 'planned' : t.countries.length ? '' : 'todo'}" data-id="${esc(t.id)}">
-        <div>
-          <div class="when">${isPlanned(t) ? `<span class="tag plan">예정 ${dday(t.dep)}</span> ` : ''}${dot(t.dep)} ~ ${dot(t.ret).slice(5) || '?'} ${t.days ? `<span class="who">(${t.days - 1}박${t.days}일)</span>` : ''}</div>
-          <div class="who">${esc(t.person)}</div>
-          ${t.memo ? `<div class="memo">${esc(t.memo)}</div>` : ''}
-        </div>
-        <div>${t.countries.map(c => `<div class="tcountry">${chip(c)}<br>${cityLine(c.cities)}</div>`).join('') || '<span class="missing">나라 입력하기 ›</span>'}
-          ${t.countries.length ? `<div class="tcount">${t.countries.length}개 나라${(n => n ? ' · ' + n + '개 도시' : '')(t.countries.reduce((n, c) => n + c.cities.length, 0))}</div>` : ''}</div>
-      </div>`;
-    $('tripList').innerHTML =
-      (planned.length ? `<div class="sectionhead">🗓️ 예정 여행 ${planned.length}건</div>` + planned.map(row).join('') +
-        (done.length ? `<div class="sectionhead" style="margin-top:14px">✈️ 다녀온 여행 ${done.length}건</div>` : '') : '') +
-      (done.map(row).join('') || (planned.length ? '' : '<div class="note">여행 기록이 없어요</div>'));
-    $('tripList').querySelectorAll('.trip').forEach(el => el.onclick = () => editTrip(el.dataset.id));
-  }
+  // 여행 목록은 '같이 간 여행' 묶음 단위로 보여 줌 (journey.js)
+  function renderTrips() { renderJourneyList(); }
 
   /* ── 폼 ── */
   function renderPeoplePick() {
@@ -568,7 +618,7 @@
     $('countryInput').focus();
   }
 
-  $('cancelBtn').onclick = () => showTab('trips');
+  $('cancelBtn').onclick = () => backFromForm(DATA.trips.find(t => t.id === editingId));
   /**
    * 출국일을 고르면 입국일 달력은 출국일부터 고를 수 있게 하고(그 전 날짜는 막음),
    * 입국일이 비었거나 출국일보다 앞이면 출국일로 맞춰서 달력이 그 달에서 열리게 함.
@@ -605,7 +655,7 @@
         Object.assign(t, base, { person: payload.person });
         enqueue('update', { id: editingId, row: tripToRow(t) });
       }
-      afterLocalChange(); toast('저장했어요 ✈️'); showTab('trips');
+      afterLocalChange(); toast('저장했어요 ✈️'); backFromForm(t);
     } else {
       const skipped = people.filter(p => DATA.trips.some(t => t.person === p && t.dep === payload.dep));
       const ids = {};
@@ -613,7 +663,9 @@
         ids[p] = newId();
         DATA.trips.push(Object.assign({ id: ids[p], person: p }, base, { countries: countries.map(c => Object.assign({}, c, { cities: c.cities.slice() })) }));
       });
-      const rows = DATA.trips.filter(t => Object.values(ids).includes(t.id)).map(tripToRow);
+      const added = DATA.trips.filter(t => Object.values(ids).includes(t.id));
+      assignJourneyForNewTrips(added);   // 같이 간 여행 묶음에 넣기 (없으면 새로 만듦)
+      const rows = added.map(tripToRow);
       if (rows.length) enqueue('add', { rows });
       afterLocalChange();
       toast(skipped.length ? `${skipped.join(', ')}: 같은 출국일 기록이 이미 있어서 건너뛰었어요`
@@ -625,9 +677,10 @@
 
   $('deleteBtn').onclick = () => {
     if (!editingId || !confirm('이 여행 기록을 삭제할까요?')) return;
+    const gone = DATA.trips.find(t => t.id === editingId);
     DATA.trips = DATA.trips.filter(t => t.id !== editingId);
     enqueue('delete', { id: editingId });
-    afterLocalChange(); toast('삭제했어요'); showTab('trips'); resetForm();
+    afterLocalChange(); toast('삭제했어요'); backFromForm(gone); resetForm();
   };
 
   /* ── 빠르게: 저장 대기열 + 기기 캐시 ──
@@ -709,6 +762,8 @@
   }
   function runJob(job) {
     const x = job.extra || {};
+    if (job.action === 'upsert') return table(x.table).upsert(x.rows);   // 묶음·가계부·장소·정산 체크
+    if (job.action === 'remove') return table(x.table).remove(x.id);
     if (job.action === 'add') return db.upsert(x.rows);
     if (job.action === 'update') return db.upsert([x.row]);   // 수정도 같은 ID로 덮어쓰기 (몇 번 다시 보내도 결과가 같음)
     if (job.action === 'delete') return db.remove(x.id);
@@ -716,8 +771,8 @@
   }
   async function syncFromServer() {
     try {
-      const trips = (await db.list()).map(rowToTrip);
-      if (!queue.length) { DATA = freshData(trips); renderAll(); saveLocal(); }
+      const fresh = await loadAll();
+      if (!queue.length) { DATA = fresh; renderAll(); saveLocal(); autoGroupJourneys(); }
     } catch (e) { console.warn('[여행기록] 서버 기준 맞추기 실패', e.message); }
   }
   // 대기열은 기기에 남으니 닫아도 다음에 이어서 저장됨. 그래도 저장 중이면 한 번 알려 줌
@@ -734,15 +789,22 @@
     const n = Math.round((Date.parse(dep) - Date.parse(todayIso())) / 86400000);
     return n > 0 ? 'D-' + n : 'D-DAY';
   }
-  /** 같은 날 같이 떠나는 가족은 한 줄로 묶음 */
+  /** 다가오는 여행: 같은 여행 묶음(일행)은 한 줄로. 일행마다 날짜가 달라도 가장 빠른 출국 ~ 가장 늦은 입국 */
   function upcomingGroups(trips) {
     const groups = {};
     trips.filter(isPlanned).forEach(t => {
-      const k = [t.dep, t.ret, JSON.stringify(t.countries.map(c => [c.name, c.cities]))].join('|');
-      (groups[k] = groups[k] || Object.assign({ people: [], ids: [] }, t)).people.push(t.person);
-      groups[k].ids.push(t.id);
+      const k = t.journeyId || [t.dep, t.ret, JSON.stringify(t.countries.map(c => [c.name, c.cities]))].join('|');
+      const g = groups[k] || (groups[k] = Object.assign({ people: [], ids: [], countries: [] }, t, { countries: [] }));
+      g.people.push(t.person); g.ids.push(t.id);
+      if (t.dep < g.dep) g.dep = t.dep;
+      if ((t.ret || '') > (g.ret || '')) g.ret = t.ret;
+      t.countries.forEach(c => {
+        const have = g.countries.find(x => x.name === c.name);
+        if (have) c.cities.forEach(x => { if (have.cities.indexOf(x) < 0) have.cities.push(x); });
+        else g.countries.push({ name: c.name, code: c.code, cities: c.cities.slice() });
+      });
     });
-    return Object.values(groups).sort((a, b) => (a.dep < b.dep ? -1 : 1));
+    return Object.values(groups).map(g => Object.assign(g, { days: tripDays(g.dep, g.ret) })).sort((a, b) => (a.dep < b.dep ? -1 : 1));
   }
 
   /** 서버 computeStats_와 같은 계산 (화면에서 바로 통계를 보여 주려고). 예정 여행은 빼고 셈 */
@@ -1041,6 +1103,8 @@
     if (countryListFor !== DATA.countries) { countryListFor = DATA.countries; renderCountryList(); }
     DATA.stats = computeStats(DATA.trips);   // 날짜가 지나면 예정 → 기록으로 바뀌므로 항상 오늘 기준으로 다시 셈
     renderStats(); renderTrips(); renderPeoplePick(); renderCertPerson();
+    if (currentJourneyId) renderJourney();
+    renderSpendStats();
   }
   function renderCountryList() {
     $('countryList').innerHTML = DATA.countries.map(c => `<option value="${esc(c.name)}">`).join('') +
@@ -1052,6 +1116,7 @@
 
   $('setBtn').onclick = () => openSettings();
   $('setClose').onclick = closeSettings;
+  $('exportExpBtn').onclick = () => exportExpensesCsv();
 
   /* 📥 엑셀(CSV) 내려받기: 엑셀에서 한글이 깨지지 않게 BOM을 붙임 */
   $('exportBtn').onclick = () => {
@@ -1131,9 +1196,9 @@
     let lastError;
     for (let i = 0; i < 3; i++) {
       try {
-        const trips = (await db.list()).map(rowToTrip);
+        const fresh = await loadAll();
         const first = !DATA;
-        if (!queue.length && !syncing) { DATA = freshData(trips); renderAll(); saveLocal(); }
+        if (!queue.length && !syncing) { DATA = fresh; renderAll(); saveLocal(); autoGroupJourneys(); }
         if (first) { $('loading').classList.add('hidden'); resetForm(); showTab('stats'); }
         if (!queue.length && !syncing) setSync('');
         return;
@@ -1146,13 +1211,17 @@
     showLoadError(lastError);
   }
 
-  const cached = loadLocal();
-  if (cached && cached.trips) {
-    DATA = freshData(cached.trips);   // 가족·나라 목록은 항상 최신 파일 기준
-    $('loading').classList.add('hidden'); renderAll(); resetForm(); showTab('stats');
-  }
-  loadFresh();
-  if (queue.length) { setSync(`저장 중… (${queue.length})`); runQueue(); }   // 지난번에 못 끝낸 저장 이어서
+  // journey.js까지 다 읽은 뒤에 시작
+  window.addEventListener('DOMContentLoaded', () => {
+    const cached = loadLocal();
+    if (cached && cached.trips) {
+      DATA = freshData(cached.trips, cached);   // 가족·나라 목록은 항상 최신 파일 기준
+      $('loading').classList.add('hidden'); renderAll(); resetForm(); showTab('stats');
+    }
+    loadFresh();
+    if (queue.length) { setSync(`저장 중… (${queue.length})`); runQueue(); }   // 지난번에 못 끝낸 저장 이어서
+  });
 </script>
+<script src="journey.js"></script>
 </body>
 </html>

@@ -45,3 +45,96 @@ create policy "공개 수정" on public.trips for update to anon, authenticated 
 create policy "공개 삭제" on public.trips for delete to anon, authenticated using (true);
 
 grant select, insert, update, delete on public.trips to anon, authenticated;
+
+-- ═════════════════════════════════════════════════════════════════════
+-- 여행 묶음 · 가계부 · 장소 · 정산 (2단계 업데이트) — 위와 함께 통째로 다시 실행해도 안전
+-- ═════════════════════════════════════════════════════════════════════
+
+-- 같이 간 여행 하나 (일행마다 출국·입국일이 달라도 하나로 묶음). 기간·나라는 일행 기록에서 계산
+create table if not exists public.journeys (
+  id          text primary key,
+  title       text not null default '',                 -- 비우면 화면이 "🇻🇳 다낭 여행"처럼 만들어 줌
+  guests      jsonb not null default '[]'::jsonb,       -- 가족 외 일행 이름들 (정산에만 참여)
+  memo        text not null default '',
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now(),
+  constraint journeys_guests_is_array check (jsonb_typeof(guests) = 'array')
+);
+
+alter table public.trips add column if not exists journey_id text references public.journeys(id) on delete set null;
+create index if not exists trips_journey_idx on public.trips (journey_id);
+
+-- 가계부: 지출 한 건 (현지화폐 + 원화)
+create table if not exists public.expenses (
+  id          text primary key,
+  journey_id  text not null references public.journeys(id) on delete cascade,
+  paid_on     date not null,                            -- 결제일 (여행 전 결제도 OK)
+  category    text not null default 'etc',              -- flight / stay / food / cafe / transport / tour / shopping / etc
+  title       text not null default '',                 -- 아시아나항공, 아고다, 이치란 라멘 …
+  amount      numeric(16,2) not null,                   -- 결제 통화 금액
+  currency    text not null default 'KRW',              -- JPY, VND, USD …
+  fx_rate     numeric(18,8),                            -- 1 단위당 원화 (결제일 기준 자동, 수정 가능)
+  krw         numeric(16,0) not null,                   -- 원화 금액 (카드 청구액으로 덮어쓸 수 있음)
+  krw_manual  boolean not null default false,           -- true면 카드 청구 원화를 직접 넣은 것
+  payer       text not null default '',                 -- 결제한 사람
+  method      text not null default '',                 -- 결제수단 메모 (민정 현대카드, 현금 …)
+  split_with  jsonb not null default '[]'::jsonb,       -- 함께 쓴 사람 (비면 일행 전체)
+  personal    boolean not null default false,           -- 개인 지출 (정산에서 빠짐)
+  place_id    text,                                     -- 연결된 장소 (선택)
+  memo        text not null default '',
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now(),
+  constraint expenses_split_is_array check (jsonb_typeof(split_with) = 'array')
+);
+create index if not exists expenses_journey_idx on public.expenses (journey_id, paid_on);
+
+-- 장소 기록 (구글지도)
+create table if not exists public.places (
+  id               text primary key,
+  journey_id       text not null references public.journeys(id) on delete cascade,
+  visited_on       date,
+  name             text not null,
+  category         text not null default 'etc',         -- food / cafe / bar / sight / shopping / stay / etc
+  google_place_id  text,
+  lat              double precision,
+  lng              double precision,
+  address          text not null default '',
+  rating           smallint check (rating between 1 and 5),   -- 우리 가족 별점
+  memo             text not null default '',
+  added_by         text not null default '',
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now()
+);
+create index if not exists places_journey_idx on public.places (journey_id, visited_on);
+
+-- 정산 체크리스트 (누가 누구에게 얼마 보냈는지 체크)
+create table if not exists public.settle_checks (
+  id           text primary key,                        -- 여행ID|보내는 사람|받는 사람
+  journey_id   text not null references public.journeys(id) on delete cascade,
+  from_person  text not null,
+  to_person    text not null,
+  amount       numeric(16,0) not null,                  -- 체크할 때의 금액 (바뀌면 화면이 알려 줌)
+  checked_at   timestamptz not null default now()
+);
+
+-- 수정 시각 자동 갱신 + 공개 정책 (trips와 같은 방식)
+do $$
+declare t text;
+begin
+  foreach t in array array['journeys', 'expenses', 'places'] loop
+    execute format('drop trigger if exists %1$s_touch on public.%1$s', t);
+    execute format('create trigger %1$s_touch before update on public.%1$s for each row execute function public.touch_updated_at()', t);
+  end loop;
+  foreach t in array array['journeys', 'expenses', 'places', 'settle_checks'] loop
+    execute format('alter table public.%s enable row level security', t);
+    execute format('drop policy if exists "공개 읽기" on public.%s', t);
+    execute format('drop policy if exists "공개 추가" on public.%s', t);
+    execute format('drop policy if exists "공개 수정" on public.%s', t);
+    execute format('drop policy if exists "공개 삭제" on public.%s', t);
+    execute format('create policy "공개 읽기" on public.%s for select to anon, authenticated using (true)', t);
+    execute format('create policy "공개 추가" on public.%s for insert to anon, authenticated with check (true)', t);
+    execute format('create policy "공개 수정" on public.%s for update to anon, authenticated using (true) with check (true)', t);
+    execute format('create policy "공개 삭제" on public.%s for delete to anon, authenticated using (true)', t);
+    execute format('grant select, insert, update, delete on public.%s to anon, authenticated', t);
+  end loop;
+end $$;

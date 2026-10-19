@@ -10,6 +10,9 @@ window.FAM_CONFIG = {
   supabaseUrl: 'https://iwfiilgjiqkdsuybqwwk.supabase.co',
   supabaseKey: 'sb_publishable_q3SLb7fToGXt9J4o7tkYOw_QArw7mQ9',
 
+  // 구글 지도 (장소 기록). Google Cloud에서 wooriwoosin.github.io 에서만 쓰이도록 제한한 키
+  googleMapsKey: 'AIzaSyBtV4hWetUhfE6rZjFmn1SqFlg7C-CoJ-c',
+
   family: [
     { name: '전정순', role: '엄마' },
     { name: '허인선', role: '시스터' },
