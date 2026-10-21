@@ -94,7 +94,7 @@ create table if not exists public.places (
   journey_id       text not null references public.journeys(id) on delete cascade,
   visited_on       date,
   name             text not null,
-  category         text not null default 'etc',         -- food / cafe / bar / sight / shopping / stay / etc
+  category         text not null default 'etc',         -- food / cafe / bar / sight / shopping / stay / airport / etc
   google_place_id  text,
   lat              double precision,
   lng              double precision,

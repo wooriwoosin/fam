@@ -47,7 +47,7 @@ const EXP_CATS = [
   { key: 'shopping', emoji: '🛍', name: '쇼핑' },
   { key: 'etc', emoji: '📱', name: '기타' },
 ];
-// 지도 핀 색: 검증한 범주형 팔레트(7색)를 정해진 순서대로. 핀·목록에 이모지도 같이 써서 색만으로 구분하지 않음
+// 지도 핀 색: 검증한 범주형 팔레트(8색)를 정해진 순서대로. 핀·목록에 이모지도 같이 써서 색만으로 구분하지 않음
 const PLACE_CATS = [
   { key: 'food', emoji: '🍜', name: '맛집', color: '#2a78d6', exp: 'food' },
   { key: 'cafe', emoji: '☕', name: '카페', color: '#eb6834', exp: 'cafe' },
@@ -55,6 +55,7 @@ const PLACE_CATS = [
   { key: 'sight', emoji: '🏛', name: '관광지', color: '#eda100', exp: 'tour' },
   { key: 'shopping', emoji: '🛍', name: '쇼핑', color: '#e87ba4', exp: 'shopping' },
   { key: 'stay', emoji: '🏨', name: '숙소', color: '#008300', exp: 'stay' },
+  { key: 'airport', emoji: '🛫', name: '공항', color: '#e34948', exp: 'transport' },
   { key: 'etc', emoji: '📍', name: '기타', color: '#6250d6', exp: 'etc' },
 ];
 const expCat = k => EXP_CATS.find(c => c.key === k) || EXP_CATS[EXP_CATS.length - 1];
@@ -777,7 +778,8 @@ async function fillFromGooglePlace(place) {
   if (place.location) { e.lat = typeof place.location.lat === 'function' ? place.location.lat() : place.location.lat; e.lng = typeof place.location.lng === 'function' ? place.location.lng() : place.location.lng; }
   const t = place.types || [];
   if (e.category === 'food' || e.isNew) {
-    if (t.some(x => /cafe|coffee|bakery/.test(x))) e.category = 'cafe';
+    if (t.some(x => /airport/.test(x))) e.category = 'airport';
+    else if (t.some(x => /cafe|coffee|bakery/.test(x))) e.category = 'cafe';
     else if (t.some(x => /bar|pub|night_club|winery/.test(x))) e.category = 'bar';
     else if (t.some(x => /restaurant|food/.test(x))) e.category = 'food';
     else if (t.some(x => /lodging|hotel|resort/.test(x))) e.category = 'stay';
