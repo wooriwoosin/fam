@@ -215,11 +215,18 @@ function assignJourneyForNewTrips(added) {
 const schemaNotice = () => `<div class="card privacy" style="background:#fff4c2;color:#6b4e00">⚠️ 여행 묶음·가계부·장소를 쓰려면
   Supabase <b>SQL Editor</b>에서 <b>supabase/schema.sql</b>을 다시 한 번 실행해 주세요. (기존 기록은 그대로예요)</div>`;
 
+// 목록 카드 오른쪽: 도시는 3곳까지만, 나머지는 '외 N곳' (전체는 여행 상세 개요에서)
+function shortCities(cities) {
+  if (!cities || !cities.length) return '';
+  const more = cities.length - 3;
+  return `<span class="cities">${cities.slice(0, 3).map(esc).join(' · ')}${more > 0 ? `&nbsp;외&nbsp;${more}곳` : ''}</span>`;
+}
+
 function renderJourneyList() {
   if (DATA.needsSchema) {
     $('personFilter').innerHTML = '';
     $('tripList').innerHTML = schemaNotice() + DATA.trips.map(t => `<div class="trip jcard" data-orphan="${esc(t.id)}"><div style="flex:1"><div class="when">${dot(t.dep)} ~ ${dot(t.ret).slice(5)}</div><div class="who">${esc(t.person)}</div></div>
-      <div>${t.countries.map(c => `<div class="tcountry">${chip(c)}<br>${cityLine(c.cities)}</div>`).join('')}</div></div>`).join('');
+      <div class="tside">${t.countries.map(c => `<div class="tcountry">${chip(c)}<br>${shortCities(c.cities)}</div>`).join('')}</div></div>`).join('');
     $('tripList').querySelectorAll('.jcard').forEach(el => el.onclick = () => editTrip(el.dataset.orphan));
     return;
   }
@@ -249,7 +256,7 @@ function renderJourneyList() {
         <div class="who">${who}</div>
         ${spend || nPlaces ? `<div class="memo">${spend ? '💰 ' + won(spend) : ''}${spend && nPlaces ? ' · ' : ''}${nPlaces ? '📍 ' + nPlaces + '곳' : ''}</div>` : ''}
       </div>
-      <div>${i.countries.map(c => `<div class="tcountry">${chip(c)}<br>${cityLine(c.cities)}</div>`).join('') || '<span class="missing">나라 입력하기 ›</span>'}</div>
+      <div class="tside">${i.countries.map(c => `<div class="tcountry">${chip(c)}<br>${shortCities(c.cities)}</div>`).join('') || '<span class="missing">나라 입력하기 ›</span>'}</div>
     </div>`;
   };
   $('tripList').innerHTML =
