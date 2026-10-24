@@ -241,17 +241,20 @@ function renderJourneyList() {
     items.push(Object.assign(journeyInfo({ id: '__' + t.id, title: '', guests: [] }), { members: [t], people: [t.person], dep: t.dep, ret: t.ret,
       days: t.days, countries: t.countries, planned: isPlanned(t), title: t.countries.map(c => flagEmoji(c.code) + ' ' + c.name).join(' · ') || '나라 미정', orphan: t.id }));
   });
+  const today = todayIso();
+  items.forEach(i => { i.ongoing = !i.planned && !!i.dep && (i.ret || i.dep) >= today; });   // 출국했고 아직 입국 전
+  const ongoing = items.filter(i => i.ongoing).sort((a, b) => (a.dep < b.dep ? -1 : 1));
   const planned = items.filter(i => i.planned).sort((a, b) => (a.dep < b.dep ? -1 : 1));
-  const done = items.filter(i => !i.planned).sort((a, b) => (a.dep < b.dep ? 1 : -1));
+  const done = items.filter(i => !i.planned && !i.ongoing).sort((a, b) => (a.dep < b.dep ? 1 : -1));
   const card = i => {
     const spend = (DATA.expenses || []).filter(e => e.journeyId === i.journey.id).reduce((n, e) => n + e.krw, 0);
     const nPlaces = (DATA.places || []).filter(p => p.journeyId === i.journey.id).length;
     const todo = i.members.some(t => !t.countries.length);
     const who = i.members.map(t => esc(t.person) + (!i.sameDates ? ` <span class="who">${md(t.dep)}~${md(t.ret)}</span>` : '')).join(' · ') +
       (i.guests.length ? ' · ' + i.guests.map(g => `<span class="guest">${esc(g)}</span>`).join(' · ') : '');
-    return `<div class="trip jcard ${i.planned ? 'planned' : todo ? 'todo' : ''}" data-jid="${esc(i.journey.id)}" data-orphan="${esc(i.orphan || '')}">
+    return `<div class="trip jcard ${i.ongoing ? 'ongoing' : i.planned ? 'planned' : todo ? 'todo' : ''}" data-jid="${esc(i.journey.id)}" data-orphan="${esc(i.orphan || '')}">
       <div style="flex:1;min-width:0">
-        <div class="when">${i.planned ? `<span class="tag plan">예정 ${dday(i.dep)}</span> ` : ''}<b>${esc(i.title)}</b></div>
+        <div class="when">${i.ongoing ? `<span class="tag now">여행 중 ${dayNo(i.dep)}일차</span> ` : i.planned ? `<span class="tag plan">예정 ${dday(i.dep)}</span> ` : ''}<b>${esc(i.title)}</b></div>
         <div class="who">${dot(i.dep)} ~ ${dot(i.ret).slice(5) || '?'}${i.days ? ` (${i.days - 1}박${i.days}일)` : ''}</div>
         <div class="who">${who}</div>
         ${spend || nPlaces ? `<div class="memo">${spend ? '💰 ' + won(spend) : ''}${spend && nPlaces ? ' · ' : ''}${nPlaces ? '📍 ' + nPlaces + '곳' : ''}</div>` : ''}
@@ -259,10 +262,11 @@ function renderJourneyList() {
       <div class="tside">${i.countries.map(c => `<div class="tcountry">${chip(c)}<br>${shortCities(c.cities)}</div>`).join('') || '<span class="missing">나라 입력하기 ›</span>'}</div>
     </div>`;
   };
-  $('tripList').innerHTML =
-    (planned.length ? `<div class="sectionhead">🗓️ 예정 여행 ${planned.length}건</div>` + planned.map(card).join('') +
-      (done.length ? `<div class="sectionhead" style="margin-top:14px">✈️ 다녀온 여행 ${done.length}건</div>` : '') : '') +
-    (done.map(card).join('') || (planned.length ? '' : '<div class="note">여행 기록이 없어요</div>'));
+  // 여행 중 → 예정 → 다녀온 순. 입국일이 지나면 자동으로 '다녀온 여행'으로 내려감
+  const sections = [['🧳 여행 중', ongoing], ['🗓️ 예정 여행', planned], ['✈️ 다녀온 여행', done]].filter(x => x[1].length);
+  $('tripList').innerHTML = sections.map(([head, list], n) =>
+    (sections.length > 1 ? `<div class="sectionhead"${n ? ' style="margin-top:14px"' : ''}>${head} ${list.length}건</div>` : '') + list.map(card).join('')).join('') ||
+    '<div class="note">여행 기록이 없어요</div>';
   $('tripList').querySelectorAll('.jcard').forEach(el => el.onclick = () => {
     if (el.dataset.orphan) { returnToJourney = null; editTrip(el.dataset.orphan); } else openJourney(el.dataset.jid);
   });
@@ -300,7 +304,7 @@ function renderJourney() {
     <div class="jhead">
       <button class="btn ghost small" id="jBack">← 목록</button>
       <div class="jtitle"><h2 id="jTitle" title="눌러서 이름 바꾸기">${esc(i.title)} <span class="edit">✎</span></h2>
-        <div class="who">${dot(i.dep)} ~ ${dot(i.ret)}${i.days ? ` · ${i.days - 1}박${i.days}일` : ''}${i.planned ? ` · <b style="color: var(--accent-text)">${dday(i.dep)}</b>` : ''}</div></div>
+        <div class="who">${dot(i.dep)} ~ ${dot(i.ret)}${i.days ? ` · ${i.days - 1}박${i.days}일` : ''}${i.planned ? ` · <b style="color: var(--accent-text)">${dday(i.dep)}</b>` : (i.ret || i.dep) >= todayIso() ? ` · <b style="color: #1e7b3a">여행 중 ${dayNo(i.dep)}일차</b>` : ''}</div></div>
     </div>
     <div class="subtabs">${subs.map(([k, n]) => `<button class="pill ${journeySub === k ? 'on' : ''}" data-sub="${k}">${n}</button>`).join('')}</div>
     <div id="jBody"></div>`;

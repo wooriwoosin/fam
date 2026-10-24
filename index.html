@@ -132,6 +132,9 @@
     .up .flags { flex-basis: 100%; justify-content: flex-start; padding-left: 68px; }
   }
   .tag.plan { background: var(--accent-soft); color: var(--accent-text); }
+  .tag.now { background: #e3f6e8; color: #1e7b3a; font-weight: 600; }
+  .trip.ongoing { background: #f1fbf3; margin: 0 -16px; padding: 12px 16px; }
+  .dday small { font-size: 12px; font-weight: 600; }
   .trip.planned { background: var(--pink-50); margin: 0 -16px; padding: 12px 16px; }
   .sectionhead { font-size: 13px; color: var(--muted); font-weight: 600; margin: 4px 0 2px; }
   /* 여행 상세 · 가계부 · 장소 · 정산 */
@@ -303,12 +306,12 @@
 <div id="toast"></div>
 
 <!-- 파일을 고치면 ?v= 값을 바꿔서 휴대폰이 예전 파일을 쓰지 않게 함 -->
-<script src="config.js?v=20261023"></script>
+<script src="config.js?v=20261024"></script>
 <script>
   // Supabase 주소·키를 넣기 전까지는 예전(구글 시트) 화면을 그대로 씀
   if (!(window.FAM_CONFIG && FAM_CONFIG.supabaseUrl && FAM_CONFIG.supabaseKey)) location.replace('legacy.html' + location.search);
 </script>
-<script src="countries.js?v=20261023"></script>
+<script src="countries.js?v=20261024"></script>
 <script>
   let DATA = null;
   let filterPerson = '';
@@ -489,9 +492,9 @@
     const byName = {}; s.countries.forEach(c => byName[c.name] = c);
     const ups = upcomingGroups(DATA.trips);
     $('upcoming').classList.toggle('hidden', !ups.length);
-    $('upcoming').innerHTML = `<h3>🗓️ 다가오는 여행</h3>` + ups.map(g => `
+    $('upcoming').innerHTML = `<h3>${ups.some(g => g.dep <= todayIso()) ? '🧳 여행 중 · 다가오는 여행' : '🗓️ 다가오는 여행'}</h3>` + ups.map(g => `
       <div class="up" data-id="${esc(g.ids[0])}">
-        <div class="dday">${dday(g.dep)}</div>
+        ${g.dep > todayIso() ? `<div class="dday">${dday(g.dep)}</div>` : `<div class="dday now">여행 중<br><small>${dayNo(g.dep)}일차</small></div>`}
         <div style="flex:1">
           <div class="when">${dot(g.dep)} ~ ${dot(g.ret).slice(5) || '?'} ${g.days ? `<span class="who">(${g.days - 1}박${g.days}일)</span>` : ''}</div>
           <div class="who">${g.people.map(esc).join(', ')}${g.memo ? ' · ' + esc(g.memo) : ''}</div>
@@ -805,14 +808,16 @@
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   }
   const isPlanned = t => !!t.dep && t.dep > todayIso();
+  const isOngoing = t => !!t.dep && !isPlanned(t) && (t.ret || t.dep) >= todayIso();   // 출국했고 아직 입국 전 (입국일 당일까지)
+  const dayNo = dep => tripDays(dep, todayIso());   // 여행 N일차
   function dday(dep) {
     const n = Math.round((Date.parse(dep) - Date.parse(todayIso())) / 86400000);
     return n > 0 ? 'D-' + n : 'D-DAY';
   }
-  /** 다가오는 여행: 같은 여행 묶음(일행)은 한 줄로. 일행마다 날짜가 달라도 가장 빠른 출국 ~ 가장 늦은 입국 */
+  /** 다가오는 여행(+ 지금 여행 중): 같은 여행 묶음(일행)은 한 줄로. 일행마다 날짜가 달라도 가장 빠른 출국 ~ 가장 늦은 입국 */
   function upcomingGroups(trips) {
     const groups = {};
-    trips.filter(isPlanned).forEach(t => {
+    trips.filter(t => isPlanned(t) || isOngoing(t)).forEach(t => {
       const k = t.journeyId || [t.dep, t.ret, JSON.stringify(t.countries.map(c => [c.name, c.cities]))].join('|');
       const g = groups[k] || (groups[k] = Object.assign({ people: [], ids: [], countries: [] }, t, { countries: [] }));
       g.people.push(t.person); g.ids.push(t.id);
@@ -1242,6 +1247,6 @@
     if (queue.length) { setSync(`저장 중… (${queue.length})`); runQueue(); }   // 지난번에 못 끝낸 저장 이어서
   });
 </script>
-<script src="journey.js?v=20261023"></script>
+<script src="journey.js?v=20261024"></script>
 </body>
 </html>
