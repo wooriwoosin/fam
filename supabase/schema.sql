@@ -153,3 +153,88 @@ update public.expenses e set sort_order = s.n
 update public.places p set sort_order = s.n
   from (select id, row_number() over (partition by journey_id, visited_on order by created_at, id) * 1000 as n from public.places) s
  where p.id = s.id and p.sort_order is null;
+
+-- ═════════════════════════════════════════════════════════════════════
+-- 4단계: 🗑 휴지통 · 🎒 준비물 체크리스트 · 🔒 변경 기록 — 다시 실행해도 안전
+-- ═════════════════════════════════════════════════════════════════════
+
+-- 휴지통: 지운 기록을 통째로(JSON) 보관했다가 "되살리기"로 그대로 돌려놓음. 자동으로 비우지 않음
+create table if not exists public.trash (
+  id          text primary key,
+  kind        text not null,                            -- journey / trip / expense / place
+  label       text not null default '',                 -- 화면에 보일 이름 (예: "🇪🇸 스페인 여행")
+  journey_id  text,                                     -- 어느 여행에서 지웠는지 (참고용, 연결 없음)
+  data        jsonb not null,                           -- {"journeys":[…],"trips":[…],"expenses":[…],…} DB 줄 그대로
+  deleted_at  timestamptz not null default now()
+);
+
+-- 준비물 체크리스트: 여행마다 목록(추가·삭제 자유), 체크는 사람마다 따로
+create table if not exists public.pack_items (
+  id          text primary key,
+  journey_id  text not null references public.journeys(id) on delete cascade,
+  section     text not null default '',                 -- ✅ 출국 전 최종 확인 / 🧳 위탁 수하물 …
+  pouch       text not null default '',                 -- 파우치(소분류). 없으면 ''
+  name        text not null,
+  sort_order  double precision,
+  created_at  timestamptz not null default now()
+);
+create index if not exists pack_items_journey_idx on public.pack_items (journey_id);
+
+create table if not exists public.pack_checks (
+  id          text primary key,                         -- 항목ID|사람
+  journey_id  text not null references public.journeys(id) on delete cascade,
+  item_id     text not null references public.pack_items(id) on delete cascade,
+  person      text not null,
+  checked     boolean not null default true,
+  updated_at  timestamptz not null default now()
+);
+create index if not exists pack_checks_journey_idx on public.pack_checks (journey_id);
+
+do $$
+declare t text;
+begin
+  foreach t in array array['trash', 'pack_items', 'pack_checks'] loop
+    execute format('alter table public.%s enable row level security', t);
+    execute format('drop policy if exists "공개 읽기" on public.%s', t);
+    execute format('drop policy if exists "공개 추가" on public.%s', t);
+    execute format('drop policy if exists "공개 수정" on public.%s', t);
+    execute format('drop policy if exists "공개 삭제" on public.%s', t);
+    execute format('create policy "공개 읽기" on public.%s for select to anon, authenticated using (true)', t);
+    execute format('create policy "공개 추가" on public.%s for insert to anon, authenticated with check (true)', t);
+    execute format('create policy "공개 수정" on public.%s for update to anon, authenticated using (true) with check (true)', t);
+    execute format('create policy "공개 삭제" on public.%s for delete to anon, authenticated using (true)', t);
+    execute format('grant select, insert, update, delete on public.%s to anon, authenticated', t);
+  end loop;
+end $$;
+
+-- 🔒 변경 기록: 모든 수정·삭제 "직전" 줄을 자동으로 남김 (누가 앱 밖에서 지워도 남음)
+-- 공개 키(앱)로는 읽기·쓰기·지우기 모두 불가. Supabase 대시보드(Table Editor / SQL Editor)에서만 보임
+create table if not exists public.change_log (
+  id       bigserial primary key,
+  at       timestamptz not null default now(),
+  tbl      text not null,
+  op       text not null,                               -- UPDATE / DELETE
+  row_id   text,
+  old_row  jsonb not null
+);
+create index if not exists change_log_at_idx on public.change_log (at desc);
+alter table public.change_log enable row level security;   -- 정책 없음 = 공개 키로는 아무것도 못 함
+revoke all on public.change_log from anon, authenticated;
+revoke all on sequence public.change_log_id_seq from anon, authenticated;
+
+create or replace function public.log_change() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  insert into public.change_log (tbl, op, row_id, old_row) values (tg_table_name, tg_op, old.id::text, to_jsonb(old));
+  return null;
+end $$;
+revoke execute on function public.log_change() from public, anon, authenticated;
+
+do $$
+declare t text;
+begin
+  foreach t in array array['trips', 'journeys', 'expenses', 'places', 'settle_checks', 'trash', 'pack_items', 'pack_checks'] loop
+    execute format('drop trigger if exists %1$s_log on public.%1$s', t);
+    execute format('create trigger %1$s_log after update or delete on public.%1$s for each row execute function public.log_change()', t);
+  end loop;
+end $$;

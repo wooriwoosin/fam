@@ -177,6 +177,29 @@
   .settle input { width: 20px; height: 20px; }
   .settle.done span:first-of-type { color: var(--muted); }
   .settle.done b { text-decoration: line-through; }
+  /* 정산·준비 고르기 + 🎒 준비물 */
+  .seg { display: flex; background: var(--pink-50); border-radius: 12px; padding: 4px; gap: 4px; margin-bottom: 12px; }
+  .seg button { flex: 1; border: 0; background: none; padding: 9px 6px; border-radius: 9px; font: inherit; font-size: 15px; color: var(--muted); cursor: pointer; }
+  .seg button.on { background: #fff; color: var(--text); font-weight: 700; box-shadow: 0 1px 3px rgba(74, 26, 38, .12); }
+  .seg small { font-size: 12px; color: var(--accent-text); font-weight: 600; }
+  .pkhead .filters { margin-bottom: 10px; }
+  .pill small { font-size: 11px; opacity: .8; }
+  .pkbar { height: 8px; background: var(--pink-50); border-radius: 999px; overflow: hidden; }
+  .pkbar i { display: block; height: 100%; background: var(--accent-strong); border-radius: 999px; transition: width .2s; }
+  .pkmeta { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 8px; font-size: 14px; flex-wrap: wrap; }
+  .pktools { display: flex; gap: 6px; }
+  .btn.small.on { background: var(--accent-soft); color: var(--accent-text); }
+  .pksec > summary { cursor: pointer; font-size: 15px; padding: 2px 0 6px; list-style-position: inside; }
+  .pkpouch { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 700; color: var(--accent-text); margin: 12px 0 2px; }
+  .pkpouch .x, .pk .x { border: 0; background: var(--pink-50); color: var(--danger); border-radius: 999px; width: 28px; height: 28px; font-size: 16px; cursor: pointer; flex: none; margin-left: auto; }
+  .pk { display: flex; gap: 10px; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--line); font-size: 15px; margin: 0; color: var(--text); cursor: pointer; }
+  .pk input { width: 20px; height: 20px; flex: none; accent-color: var(--accent-strong); }
+  .pk.done span { color: var(--muted); text-decoration: line-through; }
+  .pk.edit { cursor: default; padding: 5px 0; }
+  .pkadd { display: flex; gap: 6px; margin: 8px 0 4px; }
+  .pkadd input { flex: 1; min-width: 0; }
+  .danger-text { color: var(--danger) !important; }
+  .dangerzone { border: 1px dashed #f3b6b6; }
   tr.jlink { cursor: pointer; }
   .card.day.reordering { box-shadow: 0 0 0 2px var(--accent); }
   .reordering .erow { cursor: default; }
@@ -212,7 +235,16 @@
       <button class="btn" id="exportBtn">📥 여행 기록 내려받기</button>
       <button class="btn ghost" id="exportExpBtn">💰 가계부 내려받기</button>
     </div>
-    <div class="note">엑셀(CSV) 파일로 저장해요. 가끔 내려받아 두면 그게 백업이에요.</div>
+    <div class="note">엑셀(CSV) 파일로 저장해요. 엑셀로 보기용이에요.</div>
+    <label>📦 전체 백업 (되살리기용)</label>
+    <div class="actions" style="margin-top:0">
+      <button class="btn" id="backupBtn">📦 전체 백업 내려받기</button>
+      <button class="btn ghost" id="restoreBtn">📂 백업 파일로 되살리기</button>
+      <input type="file" id="restoreFile" accept=".json,application/json" class="hidden">
+    </div>
+    <div class="note">여행·가계부·일정·정산·준비물·휴지통이 파일 하나에 들어가요. 되살리기는 <b>빠진 것만</b> 다시 채우고, 지금 있는 기록은 건드리지 않아요.</div>
+    <label>🗑 휴지통</label>
+    <div id="trashBox"></div>
     <label>예전 구글 시트에서 옮겨오기 (한 번만)</label>
     <div class="actions" style="margin-top:0">
       <button class="btn ghost" id="migrateBtn">구글 시트 기록 옮겨오기</button>
@@ -306,12 +338,12 @@
 <div id="toast"></div>
 
 <!-- 파일을 고치면 ?v= 값을 바꿔서 휴대폰이 예전 파일을 쓰지 않게 함 -->
-<script src="config.js?v=20261026"></script>
+<script src="config.js?v=20261027"></script>
 <script>
   // Supabase 주소·키를 넣기 전까지는 예전(구글 시트) 화면을 그대로 씀
   if (!(window.FAM_CONFIG && FAM_CONFIG.supabaseUrl && FAM_CONFIG.supabaseKey)) location.replace('legacy.html' + location.search);
 </script>
-<script src="countries.js?v=20261026"></script>
+<script src="countries.js?v=20261027"></script>
 <script>
   let DATA = null;
   let filterPerson = '';
@@ -403,12 +435,18 @@
       return Object.assign(freshData(trips.map(rowToTrip)), { needsSchema: true });
     }
     const [trips, journeys, expenses, places, checks] = all;
+    // 휴지통·준비물(schema.sql 4단계)이 아직 없으면 그 기능만 끄고 나머지는 그대로
+    let step4 = [[], [], []], noStep4 = false;
+    try { step4 = await Promise.all([table('trash').list(), table('pack_items').list(), table('pack_checks').list()]); }
+    catch (e) { if (['config', 'server'].includes(e.kind)) noStep4 = true; else throw e; }
     // '순서' 칸(schema.sql 3단계)이 있는지 확인. 없으면 순서 없이 저장 (저장이 실패하지 않게)
     let noSortOrder = false;
     try { await Promise.all([rest('GET', 'expenses?select=sort_order&limit=1'), rest('GET', 'places?select=sort_order&limit=1')]); }
     catch (e) { if (['config', 'server'].includes(e.kind)) noSortOrder = true; else throw e; }
     return Object.assign(freshData(trips.map(rowToTrip), { journeys: journeys.map(rowToJourney), expenses: expenses.map(rowToExpense),
-                                            places: places.map(rowToPlace), checks: checks.map(rowToCheck) }), { noSortOrder });
+                                            places: places.map(rowToPlace), checks: checks.map(rowToCheck),
+                                            trash: step4[0].map(rowToTrash), packItems: step4[1].map(rowToPackItem), packChecks: step4[2].map(rowToPackCheck) }),
+                         { noSortOrder, noStep4 });
   }
 
   /** DB 줄 ↔ 화면 여행 */
@@ -429,7 +467,8 @@
     const m = more || {};
     return { family: FAMILY, countries: COUNTRIES, cities: CITIES, trips: trips.sort(byDepDesc),
              journeys: m.journeys || [], expenses: m.expenses || [], places: m.places || [], checks: m.checks || [],
-             needsSchema: !!m.needsSchema, noSortOrder: !!m.noSortOrder };   // 캐시에서 다시 열 때도 DB 상태 표시 유지
+             trash: m.trash || [], packItems: m.packItems || [], packChecks: m.packChecks || [],
+             needsSchema: !!m.needsSchema, noSortOrder: !!m.noSortOrder, noStep4: !!m.noStep4 };   // 캐시에서 다시 열 때도 DB 상태 표시 유지
   }
   const byDepDesc = (a, b) => (a.dep < b.dep ? 1 : a.dep > b.dep ? -1 : a.person.localeCompare(b.person, 'ko'));
 
@@ -440,6 +479,7 @@
     $('setInfo').textContent = configured()
       ? `연결: ${CFG.supabaseUrl.replace(/^https:\/\//, '')} · 여행 ${DATA ? DATA.trips.length : 0}건`
       : '아직 연결 전이에요. config.js에 Supabase 주소와 키를 넣어 주세요.';
+    renderTrash();
     $('settings').classList.remove('hidden');
     window.scrollTo(0, 0);
   }
@@ -699,11 +739,13 @@
   };
 
   $('deleteBtn').onclick = () => {
-    if (!editingId || !confirm('이 여행 기록을 삭제할까요?')) return;
-    const gone = DATA.trips.find(t => t.id === editingId);
-    DATA.trips = DATA.trips.filter(t => t.id !== editingId);
-    enqueue('delete', { id: editingId });
-    afterLocalChange(); toast('삭제했어요'); backFromForm(gone); resetForm();
+    const gone = editingId && DATA.trips.find(t => t.id === editingId);
+    if (!gone) return;
+    const last = isLastMember(gone);
+    if (!confirm(last ? '이 여행의 마지막 일행 기록이라 가계부·일정·준비물도 같이 휴지통으로 가요. 삭제할까요?' : '이 여행 기록을 삭제할까요?')) return;
+    trashTrip(gone);
+    afterLocalChange(); toast(DATA.noStep4 ? '삭제했어요' : '휴지통으로 옮겼어요 (⚙️ 설정에서 되살리기)');
+    if (last) { returnToJourney = null; resetForm(); showTab('trips'); } else { backFromForm(gone); resetForm(); }
   };
 
   /* ── 빠르게: 저장 대기열 + 기기 캐시 ──
@@ -787,10 +829,24 @@
     const x = job.extra || {};
     if (job.action === 'upsert') return table(x.table).upsert(x.rows);   // 묶음·가계부·장소·정산 체크
     if (job.action === 'remove') return table(x.table).remove(x.id);
+    if (job.action === 'trash') return trashJob(x);       // 휴지통에 넣고(있으면) 지우기
+    if (job.action === 'restore') return restoreJob(x);   // 되살리기·백업 파일에서 채우기
     if (job.action === 'add') return db.upsert(x.rows);
     if (job.action === 'update') return db.upsert([x.row]);   // 수정도 같은 ID로 덮어쓰기 (몇 번 다시 보내도 결과가 같음)
     if (job.action === 'delete') return db.remove(x.id);
     return Promise.resolve();   // 모르는 작업(예전 버전)은 버림
+  }
+  /** 휴지통 줄을 먼저 저장하고 나서 지움 → 휴지통 저장이 실패하면 아무것도 안 지워짐 */
+  async function trashJob(x) {
+    if (x.trash) await table('trash').upsert([x.trash]);
+    for (const [name, ids] of x.deletes || []) {
+      if (ids.length) await rest('DELETE', `${name}?id=in.(${ids.map(id => enc('"' + String(id).replace(/["\\]/g, '\\$&') + '"')).join(',')})`, null, 'return=minimal');
+    }
+  }
+  /** 연결된 순서(여행 → 일행 기록 → 가계부 …)대로 다시 넣고, 휴지통에서 뺌 */
+  async function restoreJob(x) {
+    for (const [name, rows] of x.upserts || []) if (rows.length) await table(name).upsert(rows);
+    if (x.trashId) await table('trash').remove(x.trashId);
   }
   async function syncFromServer() {
     try {
@@ -1130,6 +1186,7 @@
     renderStats(); renderTrips(); renderPeoplePick(); renderCertPerson();
     if (currentJourneyId) renderJourney();
     renderSpendStats();
+    if (!$('settings').classList.contains('hidden')) renderTrash();
   }
   function renderCountryList() {
     $('countryList').innerHTML = DATA.countries.map(c => `<option value="${esc(c.name)}">`).join('') +
@@ -1247,6 +1304,8 @@
     if (queue.length) { setSync(`저장 중… (${queue.length})`); runQueue(); }   // 지난번에 못 끝낸 저장 이어서
   });
 </script>
-<script src="journey.js?v=20261026"></script>
+<script src="journey.js?v=20261027"></script>
+<script src="trash.js?v=20261027"></script>
+<script src="pack.js?v=20261027"></script>
 </body>
 </html>

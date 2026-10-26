@@ -315,7 +315,7 @@ function renderJourney() {
   if (!j || !membersOf(j.id).length) { box.innerHTML = '<div class="card note">이 여행에 일행 기록이 없어요. <a href="#" id="jBack">← 여행 목록</a></div>';
     $('jBack').onclick = e => { e.preventDefault(); showTab('trips'); }; return; }
   const i = journeyInfo(j);
-  const subs = [['overview', '개요'], ['places', '📍 일정'], ['money', '💰 가계부'], ['settle', '💸 정산']];
+  const subs = [['overview', '개요'], ['places', '📍 일정'], ['money', '💰 가계부'], ['settle', '💸 정산·준비']];
   box.innerHTML = `
     <div class="jhead">
       <button class="btn ghost small" id="jBack">← 목록</button>
@@ -331,7 +331,7 @@ function renderJourney() {
     j.title = name.trim(); saveRows('journeys', [journeyToRow(j)]); afterLocalChange();
   };
   box.querySelectorAll('[data-sub]').forEach(b => b.onclick = () => { if (reorder) finishReorder(reorder.kind); journeySub = b.dataset.sub; editingExpense = editingPlace = null; renderJourney(); });
-  ({ overview: renderOverview, money: renderMoney, places: renderPlaces, settle: renderSettle })[journeySub](i);
+  ({ overview: renderOverview, money: renderMoney, places: renderPlaces, settle: renderSettleOrPack })[journeySub](i);
 }
 
 /* ── 개요: 일행(날짜가 달라도 OK), 가족 외 일행, 메모, 요약 ── */
@@ -371,6 +371,11 @@ function renderOverview(i) {
     <div class="card">
       <h3 class="ch">📝 여행 메모</h3>
       <textarea id="jMemo" rows="3" placeholder="예: 대한항공 KE461 · 숙소 바우처 메일함 확인">${esc(j.memo)}</textarea>
+    </div>
+    <div class="card dangerzone">
+      <h3 class="ch">🗑 이 여행 삭제</h3>
+      <div class="note" style="margin-top:0">같이 휴지통으로 가요: ${trashSummary(journeyBundle(j.id)) || '일행 기록'}<br>⚙️ 설정 → 🗑 휴지통에서 언제든 되살릴 수 있어요.</div>
+      <div class="actions"><button class="btn danger" id="jDel">여행 삭제</button></div>
     </div>`;
   $('jBody').querySelectorAll('[data-edit]').forEach(b => b.onclick = () => { returnToJourney = j.id; editTrip(b.dataset.edit); });
   $('jBody').querySelectorAll('[data-detach]').forEach(b => b.onclick = () => {
@@ -396,6 +401,16 @@ function renderOverview(i) {
   };
   $('guestAdd').onclick = addGuest;
   $('guestIn').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); addGuest(); } });
+  $('jDel').onclick = () => {
+    if (DATA.noStep4) return toast('여행 삭제(휴지통)를 쓰려면 Supabase SQL Editor에서 schema.sql을 다시 실행해 주세요');
+    const plain = i.title.replace(/[^\p{L}\p{N}\s·]/gu, '').replace(/\s+/g, ' ').trim();
+    const typed = prompt(`정말 삭제하려면 여행 이름을 그대로 입력해 주세요.\n\n${plain}`);
+    if (typed === null) return;
+    const norm = x => x.replace(/[^\p{L}\p{N}]/gu, '');
+    if (norm(typed) !== norm(plain)) return toast('여행 이름이 달라서 삭제하지 않았어요');
+    trashJourney(j.id);
+    afterLocalChange(); showTab('trips'); toast(`"${plain}"을 휴지통으로 옮겼어요 (⚙️ 설정에서 되살리기)`);
+  };
   $('jMemo').addEventListener('change', () => { j.memo = $('jMemo').value; saveRows('journeys', [journeyToRow(j)]); toast('메모를 저장했어요'); });
 }
 
@@ -667,9 +682,10 @@ function renderExpenseForm(i) {
   if ($('eKrw')) $('eKrw').oninput = () => { e.krwManual = $('eKrw').value !== ''; $('eKrwTag').textContent = e.krwManual ? '💳 카드 청구액' : '환율로 자동 계산'; if (!e.krwManual) recalcKrw(); };
   $('eCancel').onclick = () => { editingExpense = null; renderJourney(); };
   if ($('eDel')) $('eDel').onclick = () => {
-    if (!confirm('이 지출을 삭제할까요?')) return;
-    DATA.expenses = DATA.expenses.filter(x => x.id !== e.id); removeRow('expenses', e.id);
-    editingExpense = null; afterLocalChange(); toast('삭제했어요');
+    const orig = DATA.expenses.find(x => x.id === e.id);
+    if (!orig || !confirm('이 지출을 삭제할까요?')) return;
+    trashExpense(orig);
+    editingExpense = null; afterLocalChange(); toast(DATA.noStep4 ? '삭제했어요' : '휴지통으로 옮겼어요');
   };
   $('eSave').onclick = () => {
     read();
@@ -843,10 +859,11 @@ function renderPlaceForm(i) {
   $('pRate').querySelectorAll('[data-r]').forEach(b => b.onclick = () => { read(); p.rating = Number(b.dataset.r) || null; renderPlaceForm(i); });
   $('pCancel').onclick = () => { editingPlace = null; renderJourney(); };
   if ($('pDel')) $('pDel').onclick = () => {
-    if (!confirm('이 장소를 삭제할까요?')) return;
-    DATA.places = DATA.places.filter(x => x.id !== p.id); removeRow('places', p.id);
+    const orig = DATA.places.find(x => x.id === p.id);
+    if (!orig || !confirm('이 장소를 삭제할까요?')) return;
+    trashPlace(orig);
     DATA.expenses.filter(e => e.placeId === p.id).forEach(e => { e.placeId = ''; saveRows('expenses', [expenseToRow(e)]); });
-    editingPlace = null; afterLocalChange(); toast('삭제했어요');
+    editingPlace = null; afterLocalChange(); toast(DATA.noStep4 ? '삭제했어요' : '휴지통으로 옮겼어요');
   };
   $('pSave').onclick = () => {
     read();
