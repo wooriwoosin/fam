@@ -272,6 +272,22 @@ function renderJourneyList() {
   });
 }
 
+/** 처음 열 때: 지금 여행 중이면 그 여행의 📍 일정(오늘 날짜)부터, 아니면 원래대로 통계 */
+function ongoingJourneyId() {
+  const today = todayIso();
+  const me = (DATA.family.find(f => f.role === '나') || {}).name;
+  const now = (DATA.journeys || []).map(journeyInfo).filter(i => i.members.length && !i.planned && i.dep && (i.ret || i.dep) >= today)
+    .sort((a, b) => (b.people.includes(me) - a.people.includes(me)) || (a.dep < b.dep ? -1 : 1));   // 내가 낀 여행 먼저
+  return now.length ? now[0].journey.id : null;
+}
+function showStartScreen() {
+  const id = ongoingJourneyId();
+  if (!id) return showTab('stats');
+  openJourney(id, 'places');
+  const today = todayIso();
+  if ((DATA.places || []).some(p => p.journeyId === id && p.visitedOn === today)) { placeDayFilter = today; renderJourney(); }
+}
+
 function openTripOrJourney(tripId) {
   const t = DATA.trips.find(x => x.id === tripId);
   if (t && t.journeyId && getJourney(t.journeyId)) openJourney(t.journeyId); else editTrip(tripId);
