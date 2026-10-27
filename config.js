@@ -1,5 +1,5 @@
 /**
- * 우리 가족 여행기록 · 설정
+ * 팸레블 (FAM Travel) · 설정
  *
  * Supabase 대시보드 → Project Settings → API (또는 API Keys) 에서 복사해 넣으세요.
  * - supabaseUrl: Project URL (https://xxxx.supabase.co)

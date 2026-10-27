@@ -4,7 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#FF9999">
-<title>우리 가족 여행기록</title>
+<title>팸레블 (FAM Travel)</title>
+<meta name="apple-mobile-web-app-title" content="팸레블">
+<meta name="application-name" content="팸레블">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>💗</text></svg>">
 <style>
   :root {
@@ -238,6 +240,7 @@
   .eicon.auto { box-shadow: none; background: #fff; }
   .erow.auto sup { font-size: 10px; color: var(--accent-text); }
   .erow.auto .btn.ghost { background: #fff; }
+  .brand-en { font-size: 13px; font-weight: 600; letter-spacing: .5px; opacity: .75; }
   .taxi { position: fixed; inset: 0; background: rgba(74, 26, 38, .55); z-index: 50; display: flex; align-items: center; justify-content: center; padding: 16px; }
   .taxiin { background: #fff; border-radius: 18px; padding: 24px 20px; max-width: 520px; width: 100%; text-align: center; }
   .tbig { font-size: 30px; font-weight: 800; line-height: 1.25; margin: 10px 0; word-break: keep-all; color: #111; }
@@ -256,7 +259,7 @@
 </head>
 <body>
 <header>
-  <h1>💗 우리 가족 여행기록 <span id="sync"></span><button id="setBtn" title="설정">⚙️</button></h1>
+  <h1>💗 팸레블 <small class="brand-en">FAM Travel</small> <span id="sync"></span><button id="setBtn" title="설정">⚙️</button></h1>
   <nav>
     <button data-tab="stats" class="on">통계</button>
     <button data-tab="trips">여행 목록</button>
@@ -390,13 +393,13 @@
 <div id="toast"></div>
 
 <!-- 파일을 고치면 ?v= 값을 바꿔서 휴대폰이 예전 파일을 쓰지 않게 함 -->
-<script src="config.js?v=20261102"></script>
+<script src="config.js?v=20261103"></script>
 <script>
   // Supabase 주소·키를 넣기 전까지는 예전(구글 시트) 화면을 그대로 씀
   if (!(window.FAM_CONFIG && FAM_CONFIG.supabaseUrl && FAM_CONFIG.supabaseKey)) location.replace('legacy.html' + location.search);
 </script>
-<script src="countries.js?v=20261102"></script>
-<script src="airports.js?v=20261102"></script>
+<script src="countries.js?v=20261103"></script>
+<script src="airports.js?v=20261103"></script>
 <script>
   let DATA = null;
   let filterPerson = '';
@@ -1364,9 +1367,9 @@
     if (queue.length) { setSync(`저장 중… (${queue.length})`); runQueue(); }   // 지난번에 못 끝낸 저장 이어서
   });
 </script>
-<script src="journey.js?v=20261102"></script>
-<script src="trash.js?v=20261102"></script>
-<script src="pack.js?v=20261102"></script>
-<script src="travel.js?v=20261102"></script>
+<script src="journey.js?v=20261103"></script>
+<script src="trash.js?v=20261103"></script>
+<script src="pack.js?v=20261103"></script>
+<script src="travel.js?v=20261103"></script>
 </body>
 </html>

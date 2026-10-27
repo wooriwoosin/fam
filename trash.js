@@ -156,7 +156,7 @@ function downloadBackup() {
 function restoreFromBackup(text) {
   let file;
   try { file = JSON.parse(text); } catch (e) { return toast('백업 파일을 읽을 수 없어요'); }
-  if (!file || file.app !== 'family-travel' || !file.tables) return toast('우리 가족 여행기록 백업 파일이 아니에요');
+  if (!file || file.app !== 'family-travel' || !file.tables) return toast('팸레블 백업 파일이 아니에요');
   const inTrash = new Set();
   (DATA.trash || []).forEach(x => TABLE_ORDER.forEach(t => (x.data[t] || []).forEach(r => inTrash.add(t + ':' + r.id))));
   const add = {};
