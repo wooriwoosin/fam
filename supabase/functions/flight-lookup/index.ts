@@ -6,7 +6,7 @@
  *
  * - API 키는 Supabase 비밀 설정(AERODATABOX_KEY)에만 있음 → 공개 화면에 키가 드러나지 않음
  * - 같은 편명·날짜는 캐시(flight_cache)에서 돌려줌 (출발 이틀 전부터는 20분, 그 전엔 12시간)
- * - 하루 호출 한도(FLIGHT_DAILY_LIMIT, 기본 60번)를 넘으면 쉼 → 누가 마구 불러도 요금·한도 보호
+ * - 하루 호출 한도(FLIGHT_DAILY_LIMIT, 기본 15번)를 넘으면 쉼 → 누가 마구 불러도 요금·한도 보호
  *
  * 대시보드 → Edge Functions → Deploy a new function → Via Editor → 이름 flight-lookup → 이 파일 내용 붙여 넣기 → Deploy
  * 그다음 함수 설정에서 "Verify JWT"(JWT 확인)를 꺼 주세요 (sb_publishable_ 키는 JWT가 아니라서).
@@ -14,7 +14,7 @@
 
 const KEY = Deno.env.get('AERODATABOX_KEY') ?? '';
 const HOST = Deno.env.get('AERODATABOX_HOST') ?? 'aerodatabox.p.rapidapi.com';
-const DAILY_LIMIT = Number(Deno.env.get('FLIGHT_DAILY_LIMIT') ?? '60');
+const DAILY_LIMIT = Number(Deno.env.get('FLIGHT_DAILY_LIMIT') ?? '15');
 const SB_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SB_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 
