@@ -211,7 +211,7 @@ function wireTravelCards(i) {
     const f = flightsOf(i.journey.id).find(x => x.id === b.dataset.frefresh);
     b.disabled = true; b.textContent = '불러오는 중…';
     try {
-      const found = await lookupFlight(f.flightNo, f.dep.time.slice(0, 10), true);
+      const found = departingOn(await lookupFlight(f.flightNo, f.dep.time.slice(0, 10), true), f.dep.time.slice(0, 10));
       const hit = found.find(r => r.dep.iata === f.dep.iata) || (found.length === 1 ? found[0] : null);
       if (!hit) { toast('새 정보를 찾지 못했어요'); renderJourney(); return; }
       applyLookup(f, hit);
@@ -263,6 +263,9 @@ function newFlight(i, extra) {
   if (!f.passengers) f.passengers = defaultPassengers(i, f.date);
   return f;
 }
+
+/** 고른 날짜에 '출발'하는 것만 (항공 정보는 그날 도착하는 편도 같이 줌 → 밤 비행기는 전날 편이 섞임) */
+const departingOn = (found, date) => { const same = found.filter(r => (r.dep.time || '').slice(0, 10) === date); return same.length ? same : found; };
 
 /** Edge Function 호출. 함수가 아직 없으면 알기 쉬운 말로 */
 async function lookupFlight(flightNo, date, fresh) {
@@ -320,7 +323,7 @@ function renderFlightForm(i) {
       <div class="actions"><button class="btn" id="fLookup">🔍 날짜·편명으로 불러오기</button></div>
       <div class="note" id="fLookupMsg">불러오면 시간·공항·터미널이 채워져요. 안 되면 아래에 직접 넣어도 돼요.</div>
       ${flightChoices ? `<div class="choices"><div class="note">구간이 여러 개예요. 탈 구간을 골라 주세요</div>
-        ${flightChoices.map((r, n) => `<button class="btn ghost" data-choice="${n}">${esc(r.dep.iata)} ${hm(r.dep.time)} → ${esc(r.arr.iata)} ${hm(r.arr.time)}</button>`).join('')}</div>` : ''}
+        ${flightChoices.map((r, n) => `<button class="btn ghost" data-choice="${n}">${mdw(r.dep.time)} ${hm(r.dep.time)} ${esc(r.dep.iata)} → ${mdw(r.arr.time)} ${hm(r.arr.time)} ${esc(r.arr.iata)}</button>`).join('')}</div>` : ''}
       <div class="fform">
         <div class="fside"><b>출발</b>
           <input type="text" id="fDepAp" list="airportList" value="${esc(airportText(f.dep))}" placeholder="공항 (예: ICN, 인천)">
@@ -368,7 +371,7 @@ function renderFlightForm(i) {
     if (!f.date || !f.flightNo) return toast('출발 날짜와 편명을 넣어 주세요');
     $('fLookup').disabled = true; $('fLookupMsg').textContent = '찾는 중…';
     try {
-      const found = await lookupFlight(f.flightNo, f.date);
+      const found = departingOn(await lookupFlight(f.flightNo, f.date), f.date);
       if (!found.length) { $('fLookupMsg').textContent = '이 날짜에 그 편명을 찾지 못했어요. 날짜(현지 출발일)·편명을 확인하거나 직접 넣어 주세요.'; $('fLookup').disabled = false; return; }
       const mine = f.dep.iata ? found.filter(r => r.dep.iata === f.dep.iata) : [];
       if (found.length > 1 && mine.length !== 1) { flightChoices = found; renderFlightForm(i); return; }

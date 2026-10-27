@@ -86,7 +86,7 @@ export async function handle(req: Request): Promise<Response> {
     } catch (_) { /* 캐시·한도는 실패해도 조회는 계속 */ }
   }
 
-  const res = await fetch(`https://${HOST}/flights/number/${flight}/${date}?withAircraftImage=false&withLocation=false`, {
+  const res = await fetch(`https://${HOST}/flights/number/${flight}/${date}?withAircraftImage=false&withLocation=false&dateLocalRole=Departure`, {
     headers: { 'X-RapidAPI-Key': KEY, 'X-RapidAPI-Host': HOST },
   });
   if (res.status === 204 || res.status === 404) return reply({ ok: true, flights: [] });
