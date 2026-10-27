@@ -512,26 +512,71 @@ async function mountStaySearch(i, read) {
   } catch (e) { if (box) box.innerHTML = `<span class="note">${esc(e.message || '검색을 쓸 수 없어요')} · 이름을 직접 써 주세요</span>`; }
 }
 
-/* ───────── 📍 일정 탭 맨 위: 그날 항공편·오늘 밤 숙소 ───────── */
+/* ───────── 📍 일정 탭: 항공편·숙소가 그날 일정에 자동으로 ───────── */
+const termText = s => s.terminal ? ' T' + esc(String(s.terminal).replace(/^T/i, '')) : '';
+/**
+ * 날짜별 자동 항목 { 'YYYY-MM-DD': { top: [...], bottom: [...] } }
+ * 장소는 시간이 없어서, 오전(12시 전) 항목·체크아웃은 그날 맨 위, 오후 항목·체크인은 맨 아래에 둠
+ */
+function travelDayItems(i) {
+  const out = {};
+  if (DATA.noStep5) return out;
+  const put = (date, time, html) => {
+    if (!date) return;
+    const d = out[date] = out[date] || { top: [], bottom: [] };
+    (time && time < '12:00' ? d.top : d.bottom).push({ time: time || '99:99', html });
+  };
+  const row = (attr, icon, title, sub, extra) => `<div class="erow auto" ${attr}>
+      <span class="eicon auto">${icon}</span>
+      <div style="flex:1;min-width:0" data-open>${title}${sub ? `<div class="who">${sub}</div>` : ''}</div>${extra || ''}</div>`;
+  flightsOf(i.journey.id).forEach(f => {
+    const pax = f.passengers.length && f.passengers.length < i.people.length ? '탑승 ' + esc(f.passengers.join(', ')) : '';
+    const dDate = f.dep.time.slice(0, 10), aDate = f.arr.time.slice(0, 10);
+    const sub = [esc(f.airline), fmtDur(flightMinutes(f)), f.dep.gate && `<b>게이트 ${esc(f.dep.gate)}</b>`, pax].filter(Boolean).join(' · ');
+    put(dDate, hm(f.dep.time), row(`data-tflight="${esc(f.id)}"`, '✈️',
+      `<b>${esc(f.flightNo || '항공편')}</b> ${hm(f.dep.time)} ${esc(f.dep.iata)}${termText(f.dep)} → ${hm(f.arr.time)}${aDate && aDate !== dDate ? '<sup>+' + dayDiff(dDate, aDate) + '</sup>' : ''} ${esc(f.arr.iata)}`, sub));
+    if (aDate && aDate !== dDate) {
+      put(aDate, hm(f.arr.time), row(`data-tflight="${esc(f.id)}"`, '🛬',
+        `<b>${esc(f.flightNo || '항공편')}</b> 도착 ${hm(f.arr.time)} ${esc(f.arr.iata)}${termText(f.arr)}`, [esc(sideName(f.arr)), f.arr.baggage && `수하물 벨트 ${esc(f.arr.baggage)}`].filter(Boolean).join(' · ')));
+    }
+  });
+  staysOf(i.journey.id).forEach(s => {
+    const btns = `<div class="pact"><a class="btn ghost small" href="${dirLink(s)}" target="_blank" rel="noopener">길찾기</a>
+      <button class="btn ghost small" data-taxi="${esc(s.id)}">🚕</button></div>`;
+    put(s.checkIn, '', row(`data-tstay="${esc(s.id)}"`, '🏨', `<b>체크인</b> · ${esc(s.name)}`,
+      [`${nightsOf(s)}박`, s.checkInTime && s.checkInTime + ' 부터', s.memo && esc(s.memo)].filter(Boolean).join(' · '), btns));
+    if (s.checkOut !== s.checkIn) put(s.checkOut, '00:00', row(`data-tstay="${esc(s.id)}"`, '🧳', `<b>체크아웃</b> · ${esc(s.name)}`, ''));
+  });
+  Object.values(out).forEach(d => { d.top.sort((a, b) => (a.time < b.time ? -1 : 1)); d.bottom.sort((a, b) => (a.time < b.time ? -1 : 1)); });
+  return out;
+}
+
+/** 오늘(또는 고른 날) 밤 숙소 — 체크인 날은 그날 일정에 이미 있으니 그 사이 날만 */
 function dayTravelBanner(i, date) {
   if (!date || DATA.noStep5) return '';
-  const fl = flightsOf(i.journey.id).filter(f => f.dep.time.slice(0, 10) === date || f.arr.time.slice(0, 10) === date)
-    .sort((a, b) => (a.dep.time < b.dep.time ? -1 : 1));
-  const stays = staysOf(i.journey.id);
-  const tonight = stays.find(s => s.checkIn <= date && date < s.checkOut);
-  const leaving = stays.find(s => s.checkOut === date && s !== tonight);
-  if (!fl.length && !tonight && !leaving) return '';
+  const tonight = staysOf(i.journey.id).find(s => s.checkIn < date && date < s.checkOut);
+  if (!tonight) return '';
   return `<div class="card daybanner">
-    <div class="note" style="margin-top:0">${mdw(date)}${date === todayIso() ? ' · 오늘' : ''}</div>
-    ${fl.map(f => `<div class="bline">✈️ <b>${esc(f.flightNo)}</b> ${hm(f.dep.time)} ${esc(f.dep.iata)}${f.dep.terminal ? ' T' + esc(String(f.dep.terminal).replace(/^T/i, '')) : ''} → ${hm(f.arr.time)} ${esc(f.arr.iata)}${f.dep.gate ? ` · <b>게이트 ${esc(f.dep.gate)}</b>` : ''}</div>`).join('')}
-    ${leaving ? `<div class="bline">🧳 체크아웃: ${esc(leaving.name)}</div>` : ''}
-    ${tonight ? `<div class="bline">🏨 오늘 밤: <b>${esc(tonight.name)}</b></div>
-      <div class="fact"><a class="btn ghost small" href="${dirLink(tonight)}" target="_blank" rel="noopener">🧭 길찾기</a>
-      <button class="btn ghost small" data-taxi="${esc(tonight.id)}">🚕 택시에 보여주기</button></div>` : ''}
+    <div class="bline">🏨 ${date === todayIso() ? '오늘' : mdw(date)} 밤: <b>${esc(tonight.name)}</b></div>
+    <div class="fact"><a class="btn ghost small" href="${dirLink(tonight)}" target="_blank" rel="noopener">🧭 길찾기</a>
+    <button class="btn ghost small" data-taxi="${esc(tonight.id)}">🚕 택시에 보여주기</button></div>
   </div>`;
 }
 function wireDayBanner(i) {
-  $('jBody').querySelectorAll('.daybanner [data-taxi]').forEach(b => b.onclick = () => showTaxiCard(staysOf(i.journey.id).find(x => x.id === b.dataset.taxi)));
+  const body = $('jBody');
+  body.querySelectorAll('[data-taxi]').forEach(b => b.onclick = () => showTaxiCard(staysOf(i.journey.id).find(x => x.id === b.dataset.taxi)));
+  // 일정의 항공편·숙소를 누르면 개요에서 바로 고치기
+  body.querySelectorAll('[data-tflight] [data-open]').forEach(el => el.onclick = () => {
+    const f = flightsOf(i.journey.id).find(x => x.id === el.parentElement.dataset.tflight);
+    if (!f) return;
+    editingFlight = Object.assign(JSON.parse(JSON.stringify(f)), { date: f.dep.time.slice(0, 10) });
+    journeySub = 'overview'; renderJourney();
+  });
+  body.querySelectorAll('[data-tstay] [data-open]').forEach(el => el.onclick = () => {
+    const s = staysOf(i.journey.id).find(x => x.id === el.parentElement.dataset.tstay);
+    if (!s) return;
+    editingStay = Object.assign({}, s); journeySub = 'overview'; renderJourney();
+  });
 }
 
 /** 통계 맨 위 '다가오는 여행' 줄에 붙일 첫 항공편 */

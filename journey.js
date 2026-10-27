@@ -743,11 +743,15 @@ function renderPlaces(i) {
   const j = i.journey;
   if (editingPlace) return renderPlaceForm(i);
   const all = (DATA.places || []).filter(p => p.journeyId === j.id);
-  const days = [...new Set(all.map(p => p.visitedOn).filter(Boolean))].sort();
+  const auto = travelDayItems(i);   // 항공편·숙소 (개요에서 넣으면 그날 일정에 자동으로)
+  const tripDates = [];   // 숙소·항공편이 있으면 여행 날짜를 다 보여 줌 (중간 날도 '오늘 밤 숙소'를 볼 수 있게)
+  if (Object.keys(auto).length && i.dep && i.ret) for (let d = i.dep, n = 0; d <= i.ret && n < 60; d = addDays(d, 1), n++) tripDates.push(d);
+  const days = [...new Set(all.map(p => p.visitedOn).filter(Boolean).concat(Object.keys(auto), tripDates))].sort();
   const shown = all.filter(p => !placeDayFilter || p.visitedOn === placeDayFilter).sort(byDateThenOrder(placeDate));
   const spentAt = id => (DATA.expenses || []).filter(e => e.placeId === id).reduce((n, e) => n + e.krw, 0);
   const groups = {};
   shown.forEach(p => { const k = p.visitedOn || '9999'; (groups[k] = groups[k] || []).push(p); });
+  Object.keys(auto).filter(k => !placeDayFilter || k === placeDayFilter).forEach(k => { groups[k] = groups[k] || []; });
   $('jBody').innerHTML = `
     <div class="card">
       <div id="jMap" class="jmap ${CFG.googleMapsKey ? '' : 'hidden'}"><div class="note" style="padding:20px">지도 불러오는 중…</div></div>
@@ -760,7 +764,8 @@ function renderPlaces(i) {
     </div>
     ${dayTravelBanner(i, placeDayFilter || (todayIso() >= i.dep && todayIso() <= (i.ret || i.dep) ? todayIso() : ''))}
     ${Object.keys(groups).sort().map(k => { const on = reorder && reorder.kind === 'place' && reorder.group === k; return `<div class="card day ${on ? 'reordering' : ''}" data-group="${k}">
-      <div class="dayhead"><b>${k === '9999' ? '날짜 미정' : dayLabel(k, i, true).label}</b><span class="note">${groups[k].length}곳</span>${reorderButton('place', k, groups[k].length)}</div>
+      <div class="dayhead"><b>${k === '9999' ? '날짜 미정' : dayLabel(k, i, true).label}</b><span class="note">${groups[k].length ? groups[k].length + '곳' : ''}</span>${reorderButton('place', k, groups[k].length)}</div>
+      ${on || !auto[k] ? '' : auto[k].top.map(x => x.html).join('')}
       ${groups[k].map((p, n) => `<div class="erow" ${on ? `data-rid="${esc(p.id)}" data-date="${k}"` : ''}>
         ${on ? reorderControls(groups[k], n, placeDate) : ''}
         <span class="eicon" style="box-shadow:inset 0 0 0 2px ${placeCat(p.category).color}">${placeCat(p.category).emoji}</span>
@@ -772,7 +777,8 @@ function renderPlaces(i) {
         ${on ? '' : `<div class="pact"><a class="btn ghost small" href="${mapsLink(p)}" target="_blank" rel="noopener">지도</a>
           <button class="btn ghost small" data-spend="${esc(p.id)}" title="여기서 쓴 돈 기록">＋💰</button></div>`}
       </div>`).join('')}
-    </div>`; }).join('') || '<div class="card note">아직 기록한 장소가 없어요. 맛집·카페·관광지를 남겨 보세요.</div>'}`;
+      ${on || !auto[k] ? '' : auto[k].bottom.map(x => x.html).join('')}
+    </div>`; }).join('') || '<div class="card note">아직 기록한 장소가 없어요. 맛집·카페·관광지를 남겨 보세요. (개요에 넣은 항공편·숙소도 여기 날짜별로 보여요)</div>'}`;
   if ($('pDays')) $('pDays').querySelectorAll('[data-day]').forEach(b => b.onclick = () => { placeDayFilter = b.dataset.day; renderJourney(); });
   wireDayBanner(i);
   $('pAdd').onclick = () => { editingPlace = newPlace(i); renderJourney(); };
