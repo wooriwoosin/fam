@@ -1,5 +1,5 @@
 /**
- * 🎒 준비물 체크리스트 (여행 상세 → 💸 정산·준비 → 🎒 준비물)
+ * 🎒 준비물 체크리스트 (여행 상세 → 🎒 준비)
  *
  * - 여행마다 목록 하나 (pack_items). 처음엔 기본 목록이나 지난 여행 목록으로 시작, 항목·파우치·묶음은 자유롭게 추가·삭제
  * - 체크는 가족 공통 하나 (pack_checks, ID = 항목ID|공통). 항목마다 따로 저장해서 동시에 체크해도 서로 안 덮어씀
@@ -39,8 +39,7 @@ function templateSource() {
   return saved.length ? saved : builtinTemplate();
 }
 
-let settleView = '';       // '' = 여행마다 자동 (출발 전이면 준비물, 다녀온 뒤면 정산) | 'money' | 'pack'
-let settleViewFor = '';
+let packFor = '';          // 다른 여행을 열면 편집 모드를 끔
 const PACK_ALL = '공통';   // 체크는 가족 공통 하나
 window.packEditOn = false;   // ✏️ 목록 편집 중 (여행 준비물)
 let packHideDone = false;  // 남은 것만 보기
@@ -62,19 +61,6 @@ function isChecked(itemId) {
   return common ? common.checked : cs.some(c => c.checked);
 }
 
-/** 정산·준비 탭: 위에 [💸 정산 | 🎒 준비물] 고르기 */
-function renderSettleOrPack(i) {
-  if (settleViewFor !== i.journey.id) { settleViewFor = i.journey.id; settleView = ''; window.packEditOn = false; }
-  const view = settleView || (i.planned || (i.ret || i.dep) >= todayIso() ? 'pack' : 'money');
-  if (view === 'money') renderSettle(i); else renderPack(i);
-  const items = packOf(i.journey.id);
-  const done = items.filter(x => isChecked(x.id)).length;
-  $('jBody').insertAdjacentHTML('afterbegin', `<div class="seg">
-    <button class="${view === 'money' ? 'on' : ''}" data-view="money">💸 정산</button>
-    <button class="${view === 'pack' ? 'on' : ''}" data-view="pack">🎒 준비물${items.length ? ` <small>${done}/${items.length}</small>` : ''}</button></div>`);
-  $('jBody').querySelectorAll('[data-view]').forEach(b => b.onclick = () => { settleView = b.dataset.view; renderJourney(); });
-}
-
 function newPackItems(jid, source, idOf) {
   return source.map((x, n) => ({ id: idOf ? idOf(n) : 'pk_' + newId(), journeyId: jid, section: x.section, pouch: x.pouch, name: x.name, sortOrder: x.sortOrder }));
 }
@@ -86,6 +72,7 @@ function startPack(jid, items) {
 
 function renderPack(i) {
   const j = i.journey;
+  if (packFor !== j.id) { packFor = j.id; window.packEditOn = false; }
   if (DATA.noStep4) {
     $('jBody').innerHTML = '<div class="card privacy" style="background:#fff4c2;color:#6b4e00">⚠️ 준비물 체크리스트를 쓰려면 Supabase SQL Editor에서 <b>schema.sql</b>을 다시 실행해 주세요.</div>';
     return;

@@ -9,7 +9,7 @@
  */
 
 let currentJourneyId = null;      // 열려 있는 여행 상세
-let journeySub = 'overview';      // overview | money | places | settle
+let journeySub = 'overview';      // overview | places | money | settle | pack
 let returnToJourney = null;       // 일행 기록 수정 뒤 돌아갈 여행
 let placeDayFilter = '';          // 장소 탭 날짜 필터
 let editingExpense = null;        // 지출 폼에서 고치는 중인 지출 (새 지출이면 id만 새로)
@@ -316,7 +316,7 @@ function renderJourney() {
   if (!j || !membersOf(j.id).length) { box.innerHTML = '<div class="card note">이 여행에 일행 기록이 없어요. <a href="#" id="jBack">← 여행 목록</a></div>';
     $('jBack').onclick = e => { e.preventDefault(); showTab('trips'); }; return; }
   const i = journeyInfo(j);
-  const subs = [['overview', '개요'], ['places', '📍 일정'], ['money', '💰 가계부'], ['settle', '💸 정산·준비']];
+  const subs = [['overview', '개요'], ['places', '📍 일정'], ['money', '💰 가계부'], ['settle', '💸 정산'], ['pack', '🎒 준비']];
   box.innerHTML = `
     <div class="jhead">
       <button class="btn ghost small" id="jBack">← 목록</button>
@@ -332,7 +332,7 @@ function renderJourney() {
     j.title = name.trim(); saveRows('journeys', [journeyToRow(j)]); afterLocalChange();
   };
   box.querySelectorAll('[data-sub]').forEach(b => b.onclick = () => { if (reorder) finishReorder(reorder.kind); journeySub = b.dataset.sub; editingExpense = editingPlace = editingFlight = editingStay = null; renderJourney(); });
-  ({ overview: renderOverview, money: renderMoney, places: renderPlaces, settle: renderSettleOrPack })[journeySub](i);
+  ({ overview: renderOverview, money: renderMoney, places: renderPlaces, settle: renderSettle, pack: renderPack })[journeySub](i);
 }
 
 /* ── 개요: 일행(날짜가 달라도 OK), 가족 외 일행, 메모, 요약 ── */
