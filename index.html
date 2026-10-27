@@ -200,6 +200,43 @@
   .pkadd input { flex: 1; min-width: 0; }
   .danger-text { color: var(--danger) !important; }
   .dangerzone { border: 1px dashed #f3b6b6; }
+  a.btn { text-decoration: none; display: inline-flex; align-items: center; }
+  /* ✈️ 항공편 · 🏨 숙소 */
+  .chead { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .chead .ch { margin: 0; }
+  .leg { margin-top: 12px; }
+  .leghead { font-weight: 700; font-size: 14px; margin-bottom: 6px; }
+  .fseg { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: #fff; }
+  .fhead { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 15px; }
+  .froute { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; }
+  .fend { min-width: 0; flex: 0 1 34%; }
+  .fend.r { text-align: right; }
+  .ftime { font-size: 22px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
+  .ftime sup { font-size: 11px; color: var(--accent-text); margin-left: 1px; }
+  .fcode { font-size: 13px; font-weight: 700; color: var(--accent-text); letter-spacing: .5px; }
+  .fname { font-size: 12px; color: var(--muted); word-break: keep-all; }
+  .fmid { flex: 1; text-align: center; font-size: 12px; color: var(--muted); }
+  .fmid i { display: block; height: 2px; background: linear-gradient(90deg, var(--pink-100), var(--accent)); border-radius: 2px; margin-top: 4px; position: relative; }
+  .fmid i::after { content: '✈'; position: absolute; right: -4px; top: -9px; font-size: 13px; font-style: normal; color: var(--accent-strong); }
+  .fmeta { font-size: 13px; color: var(--muted); margin-top: 4px; }
+  .fact { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .layover { font-size: 12px; color: var(--muted); padding: 6px 0 6px 14px; border-left: 2px dashed var(--pink-100); margin: 4px 0 4px 12px; }
+  .stay { border-top: 1px solid var(--line); padding: 10px 0; }
+  .stay:first-of-type { border-top: 0; }
+  .stay.tonight { background: #f1fbf3; margin: 0 -16px; padding: 10px 16px; }
+  .sdates { font-size: 13px; color: var(--muted); }
+  .sname { font-weight: 700; font-size: 15px; margin: 2px 0; }
+  .gapwarn { background: var(--warn); color: #6b4e00; border-radius: 10px; padding: 8px 10px; font-size: 13px; margin-top: 8px; }
+  .fform { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+  .fside { display: flex; flex-direction: column; gap: 6px; }
+  .fside .row2 { gap: 6px; }
+  @media (max-width: 560px) { .fform { grid-template-columns: 1fr; } }
+  .choices { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+  .daybanner .bline { font-size: 14px; padding: 3px 0; }
+  .taxi { position: fixed; inset: 0; background: rgba(74, 26, 38, .55); z-index: 50; display: flex; align-items: center; justify-content: center; padding: 16px; }
+  .taxiin { background: #fff; border-radius: 18px; padding: 24px 20px; max-width: 520px; width: 100%; text-align: center; }
+  .tbig { font-size: 30px; font-weight: 800; line-height: 1.25; margin: 10px 0; word-break: keep-all; color: #111; }
+  .taddr { font-size: 20px; line-height: 1.4; color: #111; margin: 6px 0; }
   tr.jlink { cursor: pointer; }
   .card.day.reordering { box-shadow: 0 0 0 2px var(--accent); }
   .reordering .erow { cursor: default; }
@@ -338,12 +375,13 @@
 <div id="toast"></div>
 
 <!-- 파일을 고치면 ?v= 값을 바꿔서 휴대폰이 예전 파일을 쓰지 않게 함 -->
-<script src="config.js?v=20261028"></script>
+<script src="config.js?v=20261029"></script>
 <script>
   // Supabase 주소·키를 넣기 전까지는 예전(구글 시트) 화면을 그대로 씀
   if (!(window.FAM_CONFIG && FAM_CONFIG.supabaseUrl && FAM_CONFIG.supabaseKey)) location.replace('legacy.html' + location.search);
 </script>
-<script src="countries.js?v=20261028"></script>
+<script src="countries.js?v=20261029"></script>
+<script src="airports.js?v=20261029"></script>
 <script>
   let DATA = null;
   let filterPerson = '';
@@ -439,14 +477,19 @@
     let step4 = [[], [], []], noStep4 = false;
     try { step4 = await Promise.all([table('trash').list(), table('pack_items').list(), table('pack_checks').list()]); }
     catch (e) { if (['config', 'server'].includes(e.kind)) noStep4 = true; else throw e; }
+    // 항공편·숙소(schema.sql 5단계)
+    let step5 = [[], []], noStep5 = false;
+    try { step5 = await Promise.all([table('flights').list(), table('stays').list()]); }
+    catch (e) { if (['config', 'server'].includes(e.kind)) noStep5 = true; else throw e; }
     // '순서' 칸(schema.sql 3단계)이 있는지 확인. 없으면 순서 없이 저장 (저장이 실패하지 않게)
     let noSortOrder = false;
     try { await Promise.all([rest('GET', 'expenses?select=sort_order&limit=1'), rest('GET', 'places?select=sort_order&limit=1')]); }
     catch (e) { if (['config', 'server'].includes(e.kind)) noSortOrder = true; else throw e; }
     return Object.assign(freshData(trips.map(rowToTrip), { journeys: journeys.map(rowToJourney), expenses: expenses.map(rowToExpense),
                                             places: places.map(rowToPlace), checks: checks.map(rowToCheck),
-                                            trash: step4[0].map(rowToTrash), packItems: step4[1].map(rowToPackItem), packChecks: step4[2].map(rowToPackCheck) }),
-                         { noSortOrder, noStep4 });
+                                            trash: step4[0].map(rowToTrash), packItems: step4[1].map(rowToPackItem), packChecks: step4[2].map(rowToPackCheck),
+                                            flights: step5[0].map(rowToFlight), stays: step5[1].map(rowToStay) }),
+                         { noSortOrder, noStep4, noStep5 });
   }
 
   /** DB 줄 ↔ 화면 여행 */
@@ -467,8 +510,8 @@
     const m = more || {};
     return { family: FAMILY, countries: COUNTRIES, cities: CITIES, trips: trips.sort(byDepDesc),
              journeys: m.journeys || [], expenses: m.expenses || [], places: m.places || [], checks: m.checks || [],
-             trash: m.trash || [], packItems: m.packItems || [], packChecks: m.packChecks || [],
-             needsSchema: !!m.needsSchema, noSortOrder: !!m.noSortOrder, noStep4: !!m.noStep4 };   // 캐시에서 다시 열 때도 DB 상태 표시 유지
+             trash: m.trash || [], packItems: m.packItems || [], packChecks: m.packChecks || [], flights: m.flights || [], stays: m.stays || [],
+             needsSchema: !!m.needsSchema, noSortOrder: !!m.noSortOrder, noStep4: !!m.noStep4, noStep5: !!m.noStep5 };   // 캐시에서 다시 열 때도 DB 상태 표시 유지
   }
   const byDepDesc = (a, b) => (a.dep < b.dep ? 1 : a.dep > b.dep ? -1 : a.person.localeCompare(b.person, 'ko'));
 
@@ -538,6 +581,7 @@
         <div style="flex:1">
           <div class="when">${dot(g.dep)} ~ ${dot(g.ret).slice(5) || '?'} ${g.days ? `<span class="who">(${g.days - 1}박${g.days}일)</span>` : ''}</div>
           <div class="who">${g.people.map(esc).join(', ')}${g.memo ? ' · ' + esc(g.memo) : ''}</div>
+          ${nextFlightLine(g.journeyId)}
         </div>
         <div class="flags">${g.countries.map(c => `<span>${chip(c)} ${cityLine(c.cities)}</span>`).join('') || '<span class="note">나라 미정</span>'}</div>
       </div>`).join('');
@@ -1304,8 +1348,9 @@
     if (queue.length) { setSync(`저장 중… (${queue.length})`); runQueue(); }   // 지난번에 못 끝낸 저장 이어서
   });
 </script>
-<script src="journey.js?v=20261028"></script>
-<script src="trash.js?v=20261028"></script>
-<script src="pack.js?v=20261028"></script>
+<script src="journey.js?v=20261029"></script>
+<script src="trash.js?v=20261029"></script>
+<script src="pack.js?v=20261029"></script>
+<script src="travel.js?v=20261029"></script>
 </body>
 </html>

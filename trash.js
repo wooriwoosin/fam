@@ -8,14 +8,15 @@
  */
 
 // 되살릴 때 넣는 순서 (가리키는 쪽보다 가리켜지는 쪽 먼저)
-const TABLE_ORDER = ['journeys', 'trips', 'expenses', 'places', 'settle_checks', 'pack_items', 'pack_checks'];
+const TABLE_ORDER = ['journeys', 'trips', 'flights', 'stays', 'expenses', 'places', 'settle_checks', 'pack_items', 'pack_checks'];
 // DB 표 이름 → DATA 안의 목록 이름 · 줄 → 화면 변환
 const TABLE_DATA = {
   journeys: ['journeys', r => rowToJourney(r)], trips: ['trips', r => rowToTrip(r)], expenses: ['expenses', r => rowToExpense(r)],
   places: ['places', r => rowToPlace(r)], settle_checks: ['checks', r => rowToCheck(r)],
   pack_items: ['packItems', r => rowToPackItem(r)], pack_checks: ['packChecks', r => rowToPackCheck(r)],
+  flights: ['flights', r => rowToFlight(r)], stays: ['stays', r => rowToStay(r)],
 };
-const KIND_NAME = { journey: '✈️ 여행', trip: '🙋 일행 기록', expense: '💰 지출', place: '📍 일정' };
+const KIND_NAME = { journey: '🧳 여행', trip: '🙋 일행 기록', expense: '💰 지출', place: '📍 일정', flight: '✈️ 항공편', stay: '🏨 숙소' };
 
 function rowToTrash(r) {
   return { id: String(r.id), kind: r.kind || '', label: r.label || '', journeyId: r.journey_id || '',
@@ -30,6 +31,7 @@ function journeyBundle(jid) {
     journeys: [journeyToRow(getJourney(jid))], trips: membersOf(jid).map(tripToRow),
     expenses: of(DATA.expenses).map(expenseToRow), places: of(DATA.places).map(placeToRow), settle_checks: of(DATA.checks).map(checkToRow),
     pack_items: of(DATA.packItems).map(packItemToRow), pack_checks: of(DATA.packChecks).map(packCheckToRow),
+    flights: of(DATA.flights).map(flightToRow), stays: of(DATA.stays).map(stayToRow),
   };
 }
 
@@ -62,6 +64,12 @@ function trashTrip(t) {
 function trashExpense(e) {
   sendToTrash('expense', `${e.title || expCat(e.category).name} ${money(e.amount, e.currency)}`, e.journeyId, { expenses: [expenseToRow(e)] }, [['expenses', [e.id]]]);
 }
+function trashFlight(f) {
+  sendToTrash('flight', `${f.flightNo || '항공편'} ${f.dep.iata}→${f.arr.iata} ${md(f.dep.time)}`, f.journeyId, { flights: [flightToRow(f)] }, [['flights', [f.id]]]);
+}
+function trashStay(x) {
+  sendToTrash('stay', `${x.name} ${md(x.checkIn)}~${md(x.checkOut)}`, x.journeyId, { stays: [stayToRow(x)] }, [['stays', [x.id]]]);
+}
 function trashPlace(p) {
   sendToTrash('place', p.name, p.journeyId, { places: [placeToRow(p)] }, [['places', [p.id]]]);
 }
@@ -84,7 +92,7 @@ function restoreTrash(id) {
   if (clash.length) return toast(`${clash.map(t => `${t.person} ${dot(t.dep)}`).join(', ')} 출국 기록이 이미 있어서 되살릴 수 없어요. 그 기록을 먼저 지워 주세요`);
   const hasJourney = jid => !!getJourney(jid) || (d.journeys || []).some(j => j.id === jid);
   (d.trips || []).forEach(r => { if (r.journey_id && !hasJourney(r.journey_id)) r.journey_id = null; });   // 여행이 없어졌으면 혼자 (자동으로 다시 묶임)
-  const orphan = ['expenses', 'places', 'settle_checks', 'pack_items', 'pack_checks'].some(t => (d[t] || []).some(r => !hasJourney(r.journey_id)));
+  const orphan = ['flights', 'stays', 'expenses', 'places', 'settle_checks', 'pack_items', 'pack_checks'].some(t => (d[t] || []).some(r => !hasJourney(r.journey_id)));
   if (orphan) return toast('이 기록이 있던 여행이 지금 없어요. 휴지통에서 그 여행을 먼저 되살려 주세요');
   addRowsLocal(d);
   DATA.trash = DATA.trash.filter(x => x.id !== id);
@@ -102,7 +110,8 @@ function purgeTrash(id) {
 
 function trashSummary(d) {
   const n = t => (d[t] || []).length;
-  return [n('trips') && `일행 기록 ${n('trips')}`, n('expenses') && `지출 ${n('expenses')}`, n('places') && `일정 ${n('places')}`,
+  return [n('trips') && `일행 기록 ${n('trips')}`, n('flights') && `항공편 ${n('flights')}`, n('stays') && `숙소 ${n('stays')}`,
+    n('expenses') && `지출 ${n('expenses')}`, n('places') && `일정 ${n('places')}`,
     n('pack_items') && `준비물 ${n('pack_items')}`].filter(Boolean).join(' · ');
 }
 function renderTrash() {
@@ -130,7 +139,7 @@ function downloadBackup() {
   TABLE_ORDER.forEach(t => {
     const [key] = TABLE_DATA[t];
     const toRow = { journeys: journeyToRow, trips: tripToRow, expenses: expenseToRow, places: placeToRow, settle_checks: checkToRow,
-      pack_items: packItemToRow, pack_checks: packCheckToRow }[t];
+      pack_items: packItemToRow, pack_checks: packCheckToRow, flights: flightToRow, stays: stayToRow }[t];
     tables[t] = (DATA[key] || []).map(toRow);
   });
   tables.trash = (DATA.trash || []).map(trashToRow);
@@ -157,12 +166,12 @@ function restoreFromBackup(text) {
     add[t] = (file.tables[t] || []).filter(r => r && r.id != null && !have.has(String(r.id)) && !inTrash.has(t + ':' + r.id));
   });
   add.trips = add.trips.filter(r => !tripClash(r)).map(r => (r.journey_id && !haveJourney(r.journey_id) ? Object.assign({}, r, { journey_id: null }) : r));
-  ['expenses', 'places', 'settle_checks', 'pack_items'].forEach(t => { add[t] = add[t].filter(r => haveJourney(r.journey_id)); });
+  ['flights', 'stays', 'expenses', 'places', 'settle_checks', 'pack_items'].forEach(t => { add[t] = add[t].filter(r => haveJourney(r.journey_id)); });
   const items = new Set((DATA.packItems || []).map(x => x.id).concat(add.pack_items.map(r => String(r.id))));
   add.pack_checks = add.pack_checks.filter(r => haveJourney(r.journey_id) && items.has(String(r.item_id)));
   const trashHave = new Set((DATA.trash || []).map(x => x.id));
   const addTrash = (file.tables.trash || []).filter(r => r && r.id != null && !trashHave.has(String(r.id)));
-  const names = { journeys: '여행', trips: '일행 기록', expenses: '지출', places: '일정', settle_checks: '정산 체크', pack_items: '준비물', pack_checks: '준비물 체크' };
+  const names = { journeys: '여행', trips: '일행 기록', flights: '항공편', stays: '숙소', expenses: '지출', places: '일정', settle_checks: '정산 체크', pack_items: '준비물', pack_checks: '준비물 체크' };
   const parts = TABLE_ORDER.filter(t => add[t].length).map(t => `${names[t]} ${add[t].length}`).concat(addTrash.length ? [`휴지통 ${addTrash.length}`] : []);
   if (!parts.length) return toast('빠진 기록이 없어요 👍 지금 기록이 백업보다 같거나 많아요');
   const when = String(file.exportedAt || '').slice(0, 10);

@@ -238,3 +238,111 @@ begin
     execute format('create trigger %1$s_log after update or delete on public.%1$s for each row execute function public.log_change()', t);
   end loop;
 end $$;
+
+-- ═════════════════════════════════════════════════════════════════════
+-- 5단계: ✈️ 항공편 · 🏨 숙소 (여행 상세 → 개요) — 다시 실행해도 안전
+-- ═════════════════════════════════════════════════════════════════════
+
+-- 항공편 구간 하나 (경유면 구간 여러 개. 시간은 그 공항의 현지 시각 'YYYY-MM-DDTHH:MM')
+create table if not exists public.flights (
+  id            text primary key,
+  journey_id    text not null references public.journeys(id) on delete cascade,
+  flight_no     text not null default '',               -- KE461
+  airline       text not null default '',
+  dep_iata      text not null default '',               -- ICN
+  dep_name      text not null default '',
+  dep_cc        text not null default '',               -- 나라 코드 (KR이면 '가는 편' 판단에 씀)
+  dep_tz        text not null default '',               -- Asia/Seoul (비행시간 계산)
+  dep_time      text not null default '',
+  dep_terminal  text not null default '',
+  dep_gate      text not null default '',
+  arr_iata      text not null default '',
+  arr_name      text not null default '',
+  arr_cc        text not null default '',
+  arr_tz        text not null default '',
+  arr_time      text not null default '',
+  arr_terminal  text not null default '',
+  arr_baggage   text not null default '',               -- 수하물 벨트
+  aircraft      text not null default '',
+  status        text not null default '',               -- 자동 불러오기 결과 (Scheduled, Delayed …)
+  passengers    jsonb not null default '[]'::jsonb,     -- 탄 사람 (비면 일행 전체)
+  memo          text not null default '',               -- 좌석 등 (예약번호는 적지 마세요 — 공개 앱)
+  fetched_at    timestamptz,                            -- 마지막 자동 불러오기 시각
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now(),
+  constraint flights_passengers_is_array check (jsonb_typeof(passengers) = 'array')
+);
+create index if not exists flights_journey_idx on public.flights (journey_id);
+
+-- 숙소 (여행 중 여러 곳 가능). 체크인~체크아웃 날짜로 몇 박인지 계산
+create table if not exists public.stays (
+  id               text primary key,
+  journey_id       text not null references public.journeys(id) on delete cascade,
+  name             text not null,
+  local_name       text not null default '',            -- 현지 말 이름 (택시 기사님께 보여주기)
+  address          text not null default '',
+  local_address    text not null default '',
+  phone            text not null default '',
+  google_place_id  text,
+  lat              double precision,
+  lng              double precision,
+  check_in         date not null,
+  check_out        date not null,
+  check_in_time    text not null default '',
+  guests           jsonb not null default '[]'::jsonb,  -- 묵는 사람 (비면 일행 전체)
+  memo             text not null default '',
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now(),
+  constraint stays_dates check (check_out >= check_in),
+  constraint stays_guests_is_array check (jsonb_typeof(guests) = 'array')
+);
+create index if not exists stays_journey_idx on public.stays (journey_id, check_in);
+
+do $$
+declare t text;
+begin
+  foreach t in array array['flights', 'stays'] loop
+    execute format('drop trigger if exists %1$s_touch on public.%1$s', t);
+    execute format('create trigger %1$s_touch before update on public.%1$s for each row execute function public.touch_updated_at()', t);
+    execute format('drop trigger if exists %1$s_log on public.%1$s', t);
+    execute format('create trigger %1$s_log after update or delete on public.%1$s for each row execute function public.log_change()', t);
+    execute format('alter table public.%s enable row level security', t);
+    execute format('drop policy if exists "공개 읽기" on public.%s', t);
+    execute format('drop policy if exists "공개 추가" on public.%s', t);
+    execute format('drop policy if exists "공개 수정" on public.%s', t);
+    execute format('drop policy if exists "공개 삭제" on public.%s', t);
+    execute format('create policy "공개 읽기" on public.%s for select to anon, authenticated using (true)', t);
+    execute format('create policy "공개 추가" on public.%s for insert to anon, authenticated with check (true)', t);
+    execute format('create policy "공개 수정" on public.%s for update to anon, authenticated using (true) with check (true)', t);
+    execute format('create policy "공개 삭제" on public.%s for delete to anon, authenticated using (true)', t);
+    execute format('grant select, insert, update, delete on public.%s to anon, authenticated', t);
+  end loop;
+end $$;
+
+-- 항공편 자동 불러오기(Edge Function flight-lookup)용: 결과 캐시 + 하루 사용량 제한. 공개 키로는 못 씀
+create table if not exists public.flight_cache (
+  key         text primary key,                         -- KE461|2026-10-30
+  data        jsonb not null,
+  fetched_at  timestamptz not null default now()
+);
+create table if not exists public.flight_usage (
+  day    date primary key,
+  calls  integer not null default 0
+);
+alter table public.flight_cache enable row level security;
+alter table public.flight_usage enable row level security;
+revoke all on public.flight_cache from anon, authenticated;
+revoke all on public.flight_usage from anon, authenticated;
+
+-- 오늘 몇 번째 호출인지 세고, 한도 안이면 true
+create or replace function public.bump_flight_usage(max_calls integer) returns boolean
+language plpgsql security definer set search_path = public as $$
+declare n integer;
+begin
+  insert into public.flight_usage (day, calls) values (current_date, 1)
+    on conflict (day) do update set calls = public.flight_usage.calls + 1
+    returning calls into n;
+  return n <= max_calls;
+end $$;
+revoke execute on function public.bump_flight_usage(integer) from public, anon, authenticated;
+grant execute on function public.bump_flight_usage(integer) to service_role;

@@ -24,6 +24,9 @@
 | `config.js` | **Supabase 주소·키**, 가족 목록, 예전 구글 시트 주소(옮겨오기용) |
 | `countries.js` | 나라 148개(이름·별칭·국가코드), 나라별 도시 목록 |
 | `journey.js` | 여행 묶음·상세 화면, 가계부·환율, 장소·구글지도, 정산 |
+| `travel.js` | ✈️ 항공편(편명으로 불러오기·경유·비행시간) · 🏨 숙소(구글 검색·몇 박·택시 카드) |
+| `airports.js` | 공항 목록 (자동완성 + 시간대로 비행시간 계산) |
+| `supabase/functions/flight-lookup/index.ts` | 항공편 자동 불러오기 Edge Function (API 키를 숨겨 둠) |
 | `pack.js` | 🎒 준비물 체크리스트 (기본 목록 포함) |
 | `trash.js` | 🗑 휴지통(지우기·되살리기), 📦 전체 백업 파일 |
 | `supabase/schema.sql` | Supabase SQL Editor에서 실행하는 테이블·보안 규칙 (trips, journeys, expenses, places, settle_checks, trash, pack_items, pack_checks, change_log) |
@@ -90,6 +93,33 @@
 - 사람마다 **낸 돈 / 내 몫 / 차액**, 그리고 **최소 송금 목록**(예: 허인선 → 김민정 152,000원).
 - **체크리스트**: 보내면 ☑. 가족 모두에게 같이 보이고, 그 뒤에 지출이 바뀌어 금액이 달라지면 "금액이 바뀌었어요"로 알려 줍니다.
 
+### ✈️ 항공편 (개요 맨 위)
+- **＋ 추가** → 출발 날짜(현지)와 편명(예: `KE461`) → **🔍 불러오기**: 출발·도착 공항, 현지 시각, 터미널이 채워져요. 확인하고 **저장**.
+  불러오기가 안 되면 공항(`ICN`, `인천`, `다낭` 다 됨)과 시간을 직접 넣어도 돼요. 비행시간은 공항 시간대로 자동 계산.
+- **경유**: 구간마다 따로 넣으면, 24시간 안에 이어지는 구간은 한 여정으로 묶이고 "다낭에서 2시간 15분 환승"처럼 보여요.
+- **편도·왕복**: 한국 출발 = 🛫 가는 편, 한국 도착 = 🛬 오는 편, 그 밖은 ✈️ 이동. 가는 편만 있으면 **＋ 오는 편 추가**(공항을 거꾸로 채워 줌).
+- **탄 사람**: 일행 일부만 타는 구간은 이름을 골라요 (안 고르면 전체).
+- 출발 이틀 전부터 **🔄 게이트·지연** 버튼으로 게이트·지연 정보를 새로 불러와요. 게이트는 보통 출발 몇 시간 전에 정해져요.
+- ⚠️ 공개 앱이라 **예약번호는 적지 마세요**.
+
+### 🏨 숙소 (개요)
+- **＋ 추가** → 구글에서 숙소 검색 → 이름·주소·위치·전화 자동. 체크인·체크아웃 날짜로 몇 박인지 계산, 여러 곳 가능.
+- 숙소가 비어 있는 밤을 알려 줘요 (밤새 비행하는 날은 빼고).
+- **🧭 길찾기**, **🚕 택시에 보여주기**(현지어 이름·주소를 크게), **＋💰** 숙박비 기록.
+- 📍 일정 탭 맨 위에 그날 항공편과 **오늘 밤 숙소**가 보이고, 지도에 숙소 핀이 찍혀요.
+
+### ✈️ 항공편 자동 불러오기 설정 (한 번만)
+키를 화면에 두면 누구나 가져다 쓸 수 있어서, Supabase 안(Edge Function)에 숨겨 두고 씁니다.
+1. [RapidAPI](https://rapidapi.com)에 가입 → **AeroDataBox** 검색 → **Basic(무료)** 플랜 구독 → `X-RapidAPI-Key` 복사
+2. Supabase 대시보드 → **Edge Functions → Secrets** → 이름 `AERODATABOX_KEY`, 값에 1번 키 → 저장
+3. **Edge Functions → Deploy a new function → Via Editor** → 이름 `flight-lookup` → `supabase/functions/flight-lookup/index.ts` 내용을 통째로 붙여 넣기 → **Deploy**
+4. 그 함수의 설정(Details)에서 **Verify JWT (JWT 확인)를 끄고** 저장 — 우리 키(`sb_publishable_…`)는 JWT가 아니라서
+5. SQL Editor에서 최신 `schema.sql` 실행 (캐시·하루 한도 표 포함)
+
+- 같은 편명·날짜는 저장해 둔 결과를 다시 써요 (출발 이틀 전부터는 20분, 그 전엔 12시간마다 새로).
+- 하루 60번까지만 불러와요 (누가 마구 눌러도 무료 한도 보호). 바꾸려면 Secrets에 `FLIGHT_DAILY_LIMIT` 추가.
+- 무료 플랜 한 달 한도는 RapidAPI 요금 화면에서 확인하세요. 한도를 넘으면 직접 입력하면 돼요.
+
 ### 🎒 준비물 체크리스트 (💸 정산·준비 → 🎒 준비물)
 - 출발 전·여행 중에는 **🎒 준비물**이, 다녀온 뒤에는 **💸 정산**이 먼저 열려요. 위쪽 버튼으로 바꿀 수 있어요.
 - 처음에 **기본 목록**(144개: 출국 전 확인 · 소지 가방 · 기내 · 위탁 파우치별)이나 **지난 여행 목록**(체크는 비운 채)으로 시작해요.
@@ -140,6 +170,10 @@ insert into trips select * from jsonb_populate_record(null::trips, (select old_r
 | ⚠️ 여행 묶음·가계부·장소를 쓰려면 … schema.sql을 다시 실행 | 새 테이블이 아직 없음 | SQL Editor에서 최신 `schema.sql`을 통째로 다시 실행 (기존 기록은 그대로) |
 | 순서 바꾸기를 쓰려면 … schema.sql을 다시 실행 | 순서(sort_order) 칸이 아직 없음 | SQL Editor에서 최신 `schema.sql`을 통째로 다시 실행 (기존 기록은 입력 순서대로 자동 정렬) |
 | 휴지통을 쓰려면 … / 준비물 체크리스트를 쓰려면 … schema.sql을 다시 실행 | 휴지통·준비물 표가 아직 없음 (그 전엔 지우면 바로 없어짐) | SQL Editor에서 최신 `schema.sql`을 통째로 다시 실행 |
+| 항공편·숙소를 쓰려면 … schema.sql을 다시 실행 | 항공편·숙소 표가 아직 없음 | SQL Editor에서 최신 `schema.sql`을 통째로 다시 실행 |
+| 항공편 자동 불러오기가 아직 설정 전이에요 | Edge Function `flight-lookup`이 없음 | 위 "항공편 자동 불러오기 설정" 1~5 |
+| "Verify JWT"를 꺼 주세요 | 함수의 JWT 확인이 켜져 있음 | Edge Functions → flight-lookup → Details에서 끄기 |
+| 항공 정보 키가 맞지 않거나 구독이 안 되어 있어요 | Secrets의 키가 틀렸거나 AeroDataBox 구독 전 | RapidAPI에서 Basic 플랜 구독·키 다시 복사 |
 | 지도·장소 검색이 안 떠요 | 구글 키 제한·결제 설정 | Google Cloud에서 키의 웹사이트 제한(`https://wooriwoosin.github.io/*`), API 제한(Maps JavaScript API, Places API (New)), 결제 계정 연결 확인 |
 | ⚠️ 최신 기록을 못 불러왔어요 | 인터넷 끊김, 또는 Supabase 프로젝트가 일시 정지됨 | 제목 옆 표시를 누르면 다시 시도. 계속되면 Supabase 대시보드에서 프로젝트가 **Paused**인지 확인 → Restore |
 | Actions의 keep-alive가 빨간색 | 키가 바뀌었거나 프로젝트 정지 | `config.js` 확인, 대시보드에서 Restore |

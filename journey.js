@@ -89,7 +89,8 @@ function money(amount, cur) {
 }
 const md = iso => iso ? `${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))}` : '';
 const weekday = iso => WEEK[new Date(iso + 'T00:00:00').getDay()];
-const addDays = (iso, n) => { const d = new Date(iso + 'T00:00:00'); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+// UTC로 계산 (한국 시간대에서 toISOString이 하루 전 날짜가 되는 문제 방지)
+const addDays = (iso, n) => { const d = new Date(iso + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
 const flagEmoji = code => code && /^[A-Z]{2}$/.test(code) ? String.fromCodePoint(...[...code].map(c => 0x1F1E6 + c.charCodeAt(0) - 65)) : '';
 const arr = v => (Array.isArray(v) ? v : []).map(String);
 
@@ -301,7 +302,7 @@ function backFromForm(t) {
 
 /* ───────── 여행 상세 ───────── */
 function openJourney(id, sub) {
-  editingExpense = editingPlace = null;
+  editingExpense = editingPlace = editingFlight = editingStay = null;
   if (sub) journeySub = sub;
   if (currentJourneyId !== id) { placeDayFilter = ''; if (!sub) journeySub = 'overview'; }
   showTab('journey');
@@ -330,13 +331,15 @@ function renderJourney() {
     if (name === null) return;
     j.title = name.trim(); saveRows('journeys', [journeyToRow(j)]); afterLocalChange();
   };
-  box.querySelectorAll('[data-sub]').forEach(b => b.onclick = () => { if (reorder) finishReorder(reorder.kind); journeySub = b.dataset.sub; editingExpense = editingPlace = null; renderJourney(); });
+  box.querySelectorAll('[data-sub]').forEach(b => b.onclick = () => { if (reorder) finishReorder(reorder.kind); journeySub = b.dataset.sub; editingExpense = editingPlace = editingFlight = editingStay = null; renderJourney(); });
   ({ overview: renderOverview, money: renderMoney, places: renderPlaces, settle: renderSettleOrPack })[journeySub](i);
 }
 
 /* ── 개요: 일행(날짜가 달라도 OK), 가족 외 일행, 메모, 요약 ── */
 function renderOverview(i) {
   const j = i.journey;
+  if (editingFlight) return renderFlightForm(i);
+  if (editingStay) return renderStayForm(i);
   const ex = (DATA.expenses || []).filter(e => e.journeyId === j.id);
   const total = ex.reduce((n, e) => n + e.krw, 0);
   const nPlaces = (DATA.places || []).filter(p => p.journeyId === j.id).length;
@@ -350,6 +353,7 @@ function renderOverview(i) {
         <div><b>${nPlaces}</b><span>기록한 장소</span></div>
       </div>
     </div>
+    ${travelCards(i)}
     <div class="card">
       <h3 class="ch">👨‍👩‍👧 가족 일행 <span class="note">(사람마다 날짜가 달라도 돼요)</span></h3>
       ${i.members.map(t => `<div class="mrow">
@@ -401,6 +405,7 @@ function renderOverview(i) {
   };
   $('guestAdd').onclick = addGuest;
   $('guestIn').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); addGuest(); } });
+  wireTravelCards(i);
   $('jDel').onclick = () => {
     if (DATA.noStep4) return toast('여행 삭제(휴지통)를 쓰려면 Supabase SQL Editor에서 schema.sql을 다시 실행해 주세요');
     const plain = i.title.replace(/[^\p{L}\p{N}\s·]/gu, '').replace(/\s+/g, ' ').trim();
@@ -753,6 +758,7 @@ function renderPlaces(i) {
         ${CFG.googleMapsKey ? '<button class="btn ghost" id="pNear">📍 지금 여기 근처</button>' : ''}
       </div>
     </div>
+    ${dayTravelBanner(i, placeDayFilter || (todayIso() >= i.dep && todayIso() <= (i.ret || i.dep) ? todayIso() : ''))}
     ${Object.keys(groups).sort().map(k => { const on = reorder && reorder.kind === 'place' && reorder.group === k; return `<div class="card day ${on ? 'reordering' : ''}" data-group="${k}">
       <div class="dayhead"><b>${k === '9999' ? '날짜 미정' : dayLabel(k, i, true).label}</b><span class="note">${groups[k].length}곳</span>${reorderButton('place', k, groups[k].length)}</div>
       ${groups[k].map((p, n) => `<div class="erow" ${on ? `data-rid="${esc(p.id)}" data-date="${k}"` : ''}>
@@ -768,6 +774,7 @@ function renderPlaces(i) {
       </div>`).join('')}
     </div>`; }).join('') || '<div class="card note">아직 기록한 장소가 없어요. 맛집·카페·관광지를 남겨 보세요.</div>'}`;
   if ($('pDays')) $('pDays').querySelectorAll('[data-day]').forEach(b => b.onclick = () => { placeDayFilter = b.dataset.day; renderJourney(); });
+  wireDayBanner(i);
   $('pAdd').onclick = () => { editingPlace = newPlace(i); renderJourney(); };
   if ($('pNear')) $('pNear').onclick = () => nearbyPlaces(i);
   $('jBody').querySelectorAll('[data-place]').forEach(el => el.onclick = () => {
@@ -788,7 +795,10 @@ async function drawPlacesMap(list, i) {
   try { maps = await loadGoogleMaps(); } catch (e) { if ($('jMap')) $('jMap').innerHTML = `<div class="note" style="padding:20px">${esc(e.message)}</div>`; return; }
   const el = $('jMap');
   if (!el) return;
-  const withLoc = list.filter(p => p.lat != null && p.lng != null);
+  // 숙소도 핀으로 (날짜를 고르면 그날 밤 숙소만)
+  const stays = DATA.noStep5 ? [] : staysOf(i.journey.id).filter(s => s.lat != null && (!placeDayFilter || (s.checkIn <= placeDayFilter && placeDayFilter <= s.checkOut)));
+  const withLoc = list.filter(p => p.lat != null && p.lng != null)
+    .concat(stays.map(s => ({ id: s.id, name: s.name, lat: s.lat, lng: s.lng, category: 'stay', googlePlaceId: s.googlePlaceId, address: s.address, isStay: true })));
   const map = new maps.Map(el, { center: withLoc[0] ? { lat: withLoc[0].lat, lng: withLoc[0].lng } : { lat: 37.5665, lng: 126.978 },
     zoom: withLoc.length ? 14 : 3, mapTypeControl: false, streetViewControl: false, fullscreenControl: false, gestureHandling: 'cooperative' });
   if (!withLoc.length) return;
@@ -799,7 +809,7 @@ async function drawPlacesMap(list, i) {
     const m = new maps.Marker({ map, position: { lat: p.lat, lng: p.lng }, title: p.name,
       label: { text: c.emoji, fontSize: '14px' },
       icon: { path: maps.SymbolPath.CIRCLE, scale: 13, fillColor: c.color, fillOpacity: 1, strokeColor: '#ffffff', strokeWeight: 2 } });
-    m.addListener('click', () => { info.setContent(`<b>${esc(p.name)}</b><br>${c.emoji} ${c.name}${p.rating ? ' · ' + '★'.repeat(p.rating) : ''}<br><a href="${mapsLink(p)}" target="_blank" rel="noopener">구글맵에서 열기</a>`); info.open({ map, anchor: m }); });
+    m.addListener('click', () => { info.setContent(`<b>${esc(p.name)}</b><br>${c.emoji} ${p.isStay ? '우리 숙소' : c.name}${p.rating ? ' · ' + '★'.repeat(p.rating) : ''}<br><a href="${mapsLink(p)}" target="_blank" rel="noopener">구글맵에서 열기</a>`); info.open({ map, anchor: m }); });
     bounds.extend({ lat: p.lat, lng: p.lng });
   });
   if (withLoc.length > 1) map.fitBounds(bounds, 40);
