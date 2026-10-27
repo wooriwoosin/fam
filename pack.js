@@ -23,12 +23,26 @@ const PACK_TEMPLATE = [
     ['잡화 지퍼백', '미니 가위 (위탁 필수)|칼 (위탁 필수)|삼각대 및 셀카봉|초경량 양우산|우비|선글라스|돗자리|손톱깎기|반짓고리|여성용품|종이 세제|여분의 지퍼백|비닐봉지'],
   ]],
 ];
-const templateCount = () => PACK_TEMPLATE.reduce((n, [, pouches]) => n + pouches.reduce((m, [, list]) => m + list.split('|').length, 0), 0);
+
+// ⚙️ 설정의 "기본 준비물 목록"은 숨은 여행 하나(일행 없음)에 담아 둠 → 표를 새로 만들 필요 없이 같은 방식으로 저장·백업·휴지통
+const PACK_TEMPLATE_ID = 'pack_template';
+/** 처음 넣어 둔 기본 목록 (설정에서 "처음 상태로 되돌리기"를 누르면 이걸로) */
+function builtinTemplate() {
+  let n = 0;
+  const src = [];
+  PACK_TEMPLATE.forEach(([section, pouches]) => pouches.forEach(([pouch, list]) => list.split('|').forEach(name => src.push({ section, pouch, name, sortOrder: ++n * 1000 }))));
+  return src;
+}
+/** 새 여행에 넣을 기본 목록: 설정에서 고친 목록이 있으면 그것, 없으면 처음 목록 */
+function templateSource() {
+  const saved = packOf(PACK_TEMPLATE_ID);
+  return saved.length ? saved : builtinTemplate();
+}
 
 let settleView = '';       // '' = 여행마다 자동 (출발 전이면 준비물, 다녀온 뒤면 정산) | 'money' | 'pack'
 let settleViewFor = '';
 const PACK_ALL = '공통';   // 체크는 가족 공통 하나
-let packEdit = false;      // ✏️ 목록 편집 중
+window.packEditOn = false;   // ✏️ 목록 편집 중 (여행 준비물)
 let packHideDone = false;  // 남은 것만 보기
 
 function rowToPackItem(r) {
@@ -50,7 +64,7 @@ function isChecked(itemId) {
 
 /** 정산·준비 탭: 위에 [💸 정산 | 🎒 준비물] 고르기 */
 function renderSettleOrPack(i) {
-  if (settleViewFor !== i.journey.id) { settleViewFor = i.journey.id; settleView = ''; packEdit = false; }
+  if (settleViewFor !== i.journey.id) { settleViewFor = i.journey.id; settleView = ''; window.packEditOn = false; }
   const view = settleView || (i.planned || (i.ret || i.dep) >= todayIso() ? 'pack' : 'money');
   if (view === 'money') renderSettle(i); else renderPack(i);
   const items = packOf(i.journey.id);
@@ -61,8 +75,8 @@ function renderSettleOrPack(i) {
   $('jBody').querySelectorAll('[data-view]').forEach(b => b.onclick = () => { settleView = b.dataset.view; renderJourney(); });
 }
 
-function newPackItems(jid, source) {
-  return source.map(x => ({ id: 'pk_' + newId(), journeyId: jid, section: x.section, pouch: x.pouch, name: x.name, sortOrder: x.sortOrder }));
+function newPackItems(jid, source, idOf) {
+  return source.map((x, n) => ({ id: idOf ? idOf(n) : 'pk_' + newId(), journeyId: jid, section: x.section, pouch: x.pouch, name: x.name, sortOrder: x.sortOrder }));
 }
 function startPack(jid, items) {
   DATA.packItems = (DATA.packItems || []).concat(items);
@@ -78,29 +92,35 @@ function renderPack(i) {
   }
   const items = packOf(j.id);
 
-  if (!items.length && !packEdit) {
+  if (!items.length && !window.packEditOn) {
     // 지난 여행 중 목록이 있는 가장 최근 여행
-    const prev = (DATA.journeys || []).filter(x => x.id !== j.id && packOf(x.id).length).map(journeyInfo)
+    const prev = (DATA.journeys || []).filter(x => x.id !== j.id && x.id !== PACK_TEMPLATE_ID && packOf(x.id).length).map(journeyInfo)
       .sort((a, b) => (a.dep < b.dep ? 1 : -1))[0];
     $('jBody').innerHTML = `<div class="card">
       <h3 class="ch">🎒 준비물 체크리스트</h3>
       <div class="note" style="margin-top:0">목록과 체크는 이 여행 일행이 같이 써요. 시작한 뒤에 항목을 마음대로 더하고 뺄 수 있어요.</div>
       <div class="actions" style="flex-direction:column;align-items:stretch">
-        <button class="btn" id="pkTpl">✈️ 기본 목록으로 시작 (${templateCount()}개)</button>
+        <button class="btn" id="pkTpl">✈️ 기본 목록으로 시작 (${templateSource().length}개)</button>
         ${prev ? `<button class="btn ghost" id="pkPrev">📋 지난 여행 목록 가져오기 · ${esc(prev.title)} (${packOf(prev.journey.id).length}개)</button>` : ''}
         <button class="btn ghost" id="pkEmpty">✏️ 빈 목록에서 직접 만들기</button>
-      </div></div>`;
-    $('pkTpl').onclick = () => {
-      let n = 0;
-      const src = [];
-      PACK_TEMPLATE.forEach(([section, pouches]) => pouches.forEach(([pouch, list]) => list.split('|').forEach(name => src.push({ section, pouch, name, sortOrder: ++n * 1000 }))));
-      startPack(j.id, newPackItems(j.id, src)); toast('기본 목록을 넣었어요 🎒');
-    };
+      </div>
+      <div class="note">기본 목록은 ⚙️ 설정 → 🎒 기본 준비물 목록에서 더하고 뺄 수 있어요.</div></div>`;
+    $('pkTpl').onclick = () => { startPack(j.id, newPackItems(j.id, templateSource())); toast('기본 목록을 넣었어요 🎒'); };
     if ($('pkPrev')) $('pkPrev').onclick = () => { startPack(j.id, newPackItems(j.id, packOf(prev.journey.id))); toast('지난 여행 목록을 가져왔어요 (체크는 비운 채)'); };
-    $('pkEmpty').onclick = () => { packEdit = true; renderJourney(); };
+    $('pkEmpty').onclick = () => { window.packEditOn = true; renderJourney(); };
     return;
   }
 
+  renderPackList({ box: $('jBody'), jid: j.id, rerender: renderJourney, template: false });
+}
+
+/**
+ * 목록 화면 (여행 준비물 · 설정의 기본 목록 둘 다)
+ * template이면 체크 없이 늘 편집 모드
+ */
+function renderPackList({ box, jid, rerender, template }) {
+  const items = packOf(jid);
+  const packEdit = template || window.packEditOn;
   // 묶음 → 파우치 → 항목 (목록 순서 그대로)
   const sections = [];
   items.forEach(x => {
@@ -116,7 +136,12 @@ function renderPack(i) {
   const pct = total ? Math.round(done / total * 100) : 0;
   const addRow = (sec, pouch) => `<div class="pkadd"><input type="text" data-addsec="${esc(sec)}" data-addpouch="${esc(pouch)}" placeholder="＋ 항목 추가 (쉼표로 여러 개)" enterkeyhint="done"><button class="btn ghost small" data-addbtn>추가</button></div>`;
 
-  $('jBody').innerHTML = `
+  box.innerHTML = template ? `
+    <div class="card pkhead">
+      <div class="pkmeta" style="margin-top:0"><span><b>${total}개</b> · 묶음 ${sections.length}개</span>
+        <span class="pktools"><button class="btn ghost small" id="pkBuiltin">↩️ 처음 상태로</button></span></div>
+      <div class="note">여기서 고친 목록이 새 여행의 "기본 목록으로 시작"에 들어가요. 이미 만든 여행 목록은 안 바뀌어요.<br>× 를 누르면 바로 빠지고, 항목은 쉼표(,)로 여러 개를 한 번에 넣을 수 있어요.</div>
+    </div>` + sectionsHtml() + `<div class="card"><button class="btn ghost" id="pkNewSec" style="width:100%">＋ 묶음 추가 (예: 👶 아기 용품)</button></div>` : `
     <div class="card pkhead">
       <div class="pkbar" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><i style="width:${pct}%"></i></div>
       <div class="pkmeta"><span><b>${done}/${total}</b> 챙김${done === total && total ? ' 🎉' : ''}</span>
@@ -126,15 +151,22 @@ function renderPack(i) {
         </span></div>
       ${packEdit ? '<div class="note">× 를 누르면 바로 빠져요. 항목은 쉼표(,)로 여러 개를 한 번에 넣을 수 있어요.</div>' : ''}
     </div>
-    ${sections.map(sec => {
+    ${sectionsHtml()}
+    ${packEdit ? `<div class="card"><div class="actions" style="margin-top:0;flex-direction:column;align-items:stretch">
+      <button class="btn ghost" id="pkNewSec">＋ 묶음 추가 (예: 👶 아기 용품)</button>
+      ${items.length ? '<button class="btn ghost" id="pkToTpl">⭐ 이 목록을 기본 준비물 목록으로 저장</button>' : ''}
+      ${items.length ? '<button class="btn ghost danger-text" id="pkReset">🔄 목록 비우고 처음부터 다시 만들기</button>' : ''}</div></div>` : ''}`;
+
+  function sectionsHtml() {
+    return sections.map(sec => {
       const all = sec.pouches.flatMap(p => p.items);
       const secDone = doneOf(all);
       return `<details class="card pksec" open>
-        <summary><b>${esc(sec.name || '기타')}</b> <span class="note">${secDone}/${all.length}${secDone === all.length ? ' ✓' : ''}</span></summary>
+        <summary><b>${esc(sec.name || '기타')}</b> <span class="note">${template ? all.length + '개' : `${secDone}/${all.length}${secDone === all.length ? ' ✓' : ''}`}</span></summary>
         ${sec.pouches.map(po => {
           const shown = packEdit || !packHideDone ? po.items : po.items.filter(x => !isChecked(x.id));
           if (!shown.length && !packEdit) return '';
-          return `${po.name ? `<div class="pkpouch">👜 ${esc(po.name)} <span class="note">${doneOf(po.items)}/${po.items.length}</span>${packEdit ? `<button class="x" data-delpouch="${esc(sec.name)}|${esc(po.name)}" title="파우치 통째로 빼기">×</button>` : ''}</div>` : ''}
+          return `${po.name ? `<div class="pkpouch">👜 ${esc(po.name)} <span class="note">${template ? po.items.length : doneOf(po.items) + '/' + po.items.length}</span>${packEdit ? `<button class="x" data-delpouch="${esc(sec.name)}|${esc(po.name)}" title="파우치 통째로 빼기">×</button>` : ''}</div>` : ''}
             ${shown.map(x => packEdit
               ? `<div class="pk edit"><span>${esc(x.name)}</span><button class="x" data-delitem="${esc(x.id)}" aria-label="${esc(x.name)} 빼기">×</button></div>`
               : `<label class="pk ${isChecked(x.id) ? 'done' : ''}"><input type="checkbox" data-pk="${esc(x.id)}" ${isChecked(x.id) ? 'checked' : ''}><span>${esc(x.name)}</span></label>`).join('')}
@@ -143,17 +175,15 @@ function renderPack(i) {
         ${packEdit ? `<div class="actions"><button class="btn ghost small" data-newpouch="${esc(sec.name)}">＋ 파우치 추가</button>
           <button class="btn ghost small danger-text" data-delsec="${esc(sec.name)}">묶음 삭제</button></div>` : ''}
       </details>`;
-    }).join('')}
-    ${packEdit ? `<div class="card"><div class="actions" style="margin-top:0;flex-direction:column;align-items:stretch">
-      <button class="btn ghost" id="pkNewSec">＋ 묶음 추가 (예: 👶 아기 용품)</button>
-      ${items.length ? '<button class="btn ghost danger-text" id="pkReset">🔄 목록 비우고 처음부터 다시 만들기</button>' : ''}</div></div>` : ''}`;
+    }).join('');
+  }
 
-  if ($('pkHide')) $('pkHide').onclick = () => { packHideDone = !packHideDone; renderJourney(); };
-  $('pkEdit').onclick = () => { packEdit = !packEdit; renderJourney(); };
+  if ($('pkHide')) $('pkHide').onclick = () => { packHideDone = !packHideDone; rerender(); };
+  if ($('pkEdit')) $('pkEdit').onclick = () => { window.packEditOn = !window.packEditOn; rerender(); };
 
-  $('jBody').querySelectorAll('[data-pk]').forEach(cb => cb.onchange = () => {
+  box.querySelectorAll('[data-pk]').forEach(cb => cb.onchange = () => {
     const id = cb.dataset.pk + '|' + PACK_ALL;
-    const c = { id, journeyId: j.id, itemId: cb.dataset.pk, person: PACK_ALL, checked: cb.checked };
+    const c = { id, journeyId: jid, itemId: cb.dataset.pk, person: PACK_ALL, checked: cb.checked };
     DATA.packChecks = (DATA.packChecks || []).filter(x => x.id !== id).concat(c);
     saveRows('pack_checks', [packCheckToRow(c)]);
     const y = window.scrollY;
@@ -168,13 +198,13 @@ function renderPack(i) {
     enqueue('trash', { deletes: [['pack_items', ids]] });   // 체크는 DB가 같이 지움
     const y = window.scrollY; afterLocalChange(); window.scrollTo(0, y);
   };
-  $('jBody').querySelectorAll('[data-delitem]').forEach(b => b.onclick = () => removeItems([b.dataset.delitem]));
-  $('jBody').querySelectorAll('[data-delpouch]').forEach(b => b.onclick = () => {
+  box.querySelectorAll('[data-delitem]').forEach(b => b.onclick = () => removeItems([b.dataset.delitem]));
+  box.querySelectorAll('[data-delpouch]').forEach(b => b.onclick = () => {
     const [sec, pouch] = b.dataset.delpouch.split('|');
     const ids = items.filter(x => x.section === sec && x.pouch === pouch).map(x => x.id);
     if (confirm(`"${pouch}" 파우치 항목 ${ids.length}개를 모두 뺄까요?`)) removeItems(ids);
   });
-  $('jBody').querySelectorAll('[data-delsec]').forEach(b => b.onclick = () => {
+  box.querySelectorAll('[data-delsec]').forEach(b => b.onclick = () => {
     const ids = items.filter(x => x.section === b.dataset.delsec).map(x => x.id);
     if (confirm(`"${b.dataset.delsec}" 묶음 항목 ${ids.length}개를 모두 뺄까요?`)) removeItems(ids);
   });
@@ -183,25 +213,25 @@ function renderPack(i) {
   const addItems = (sec, pouch, text, focusAfter) => {
     const names = text.split(/[,，\n]/).map(x => x.trim()).filter(Boolean);
     if (!names.length) return;
-    const all = packOf(j.id);
+    const all = packOf(jid);
     const same = all.filter(x => x.section === sec && x.pouch === pouch);
     const inSec = all.filter(x => x.section === sec);
     let base = same.length ? same[same.length - 1].sortOrder : inSec.length ? Math.max(...inSec.map(x => x.sortOrder || 0)) : Math.max(0, ...all.map(x => x.sortOrder || 0)) + 1000;
     // 바로 뒤 항목과 겹치지 않게 그 사이에 넣음
     const next = all.find(x => (x.sortOrder || 0) > base);
     const step = next ? ((next.sortOrder - base) / (names.length + 1)) : 1;
-    const added = names.map(name => ({ id: 'pk_' + newId(), journeyId: j.id, section: sec, pouch, name, sortOrder: (base += step) }));
+    const added = names.map(name => ({ id: 'pk_' + newId(), journeyId: jid, section: sec, pouch, name, sortOrder: (base += step) }));
     DATA.packItems = (DATA.packItems || []).concat(added);
     saveRows('pack_items', added.map(packItemToRow));
     const y = window.scrollY; afterLocalChange(); window.scrollTo(0, y);
-    if (focusAfter) { const el = [...$('jBody').querySelectorAll('[data-addsec]')].find(x => x.dataset.addsec === sec && x.dataset.addpouch === pouch); if (el) el.focus(); }
+    if (focusAfter) { const el = [...box.querySelectorAll('[data-addsec]')].find(x => x.dataset.addsec === sec && x.dataset.addpouch === pouch); if (el) el.focus(); }
   };
-  $('jBody').querySelectorAll('[data-addsec]').forEach(inp => {
+  box.querySelectorAll('[data-addsec]').forEach(inp => {
     const go = () => addItems(inp.dataset.addsec, inp.dataset.addpouch, inp.value, true);
     inp.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); go(); } });
     inp.nextElementSibling.onclick = go;
   });
-  $('jBody').querySelectorAll('[data-newpouch]').forEach(b => b.onclick = () => {
+  box.querySelectorAll('[data-newpouch]').forEach(b => b.onclick = () => {
     const pouch = (prompt('파우치 이름 (예: 카메라 파우치)') || '').trim();
     if (!pouch) return;
     const first = (prompt(`"${pouch}"에 넣을 항목 (쉼표로 여러 개)`) || '').trim();
@@ -209,7 +239,15 @@ function renderPack(i) {
   });
   if ($('pkReset')) $('pkReset').onclick = () => {
     if (!confirm(`준비물 ${items.length}개와 체크를 모두 지우고, 기본 목록이나 지난 여행 목록으로 다시 시작할까요?`)) return;
-    packEdit = false; removeItems(items.map(x => x.id));
+    window.packEditOn = false; removeItems(items.map(x => x.id));
+  };
+  if ($('pkToTpl')) $('pkToTpl').onclick = () => {
+    if (!confirm(`이 목록(${items.length}개)을 기본 준비물 목록으로 저장할까요?\n앞으로 새 여행의 "기본 목록으로 시작"에 이 목록이 들어가요.`)) return;
+    saveTemplate(items); toast('기본 준비물 목록으로 저장했어요 ⭐');
+  };
+  if ($('pkBuiltin')) $('pkBuiltin').onclick = () => {
+    if (!confirm(`기본 준비물 목록을 처음 상태(${builtinTemplate().length}개)로 되돌릴까요? 여기서 더하고 뺀 것은 없어져요.`)) return;
+    saveTemplate(builtinTemplate()); toast('처음 상태로 되돌렸어요');
   };
   if ($('pkNewSec')) $('pkNewSec').onclick = () => {
     const sec = (prompt('묶음 이름 (예: 👶 아기 용품)') || '').trim();
@@ -218,3 +256,40 @@ function renderPack(i) {
     if (first) addItems(sec, '', first);
   };
 }
+
+/* ───────── ⚙️ 설정 → 🎒 기본 준비물 목록 ───────── */
+/** 숨은 '기본 목록' 여행이 없으면 만들고, 목록을 통째로 바꿔 넣음 */
+function ensureTemplateJourney() {
+  if (getJourney(PACK_TEMPLATE_ID)) return;
+  const j = { id: PACK_TEMPLATE_ID, title: '⚙️ 기본 준비물 목록', guests: [], memo: '새 여행 준비물의 기본 목록 (화면에는 안 보이는 여행)' };
+  DATA.journeys.push(j); saveRows('journeys', [journeyToRow(j)]);
+}
+function saveTemplate(source) {
+  ensureTemplateJourney();
+  const old = packOf(PACK_TEMPLATE_ID).map(x => x.id);
+  const fresh = newPackItems(PACK_TEMPLATE_ID, source.map((x, n) => Object.assign({}, x, { sortOrder: (n + 1) * 1000 })));
+  DATA.packItems = (DATA.packItems || []).filter(x => x.journeyId !== PACK_TEMPLATE_ID).concat(fresh);
+  if (old.length) enqueue('trash', { deletes: [['pack_items', old]] });
+  saveRows('pack_items', fresh.map(packItemToRow));
+  afterLocalChange();
+}
+function renderPackSettings() {
+  const box = $('packSetBody');
+  if (!box || !DATA) return;
+  if (DATA.noStep4) { box.innerHTML = '<div class="card privacy" style="background:#fff4c2;color:#6b4e00">⚠️ 준비물을 쓰려면 Supabase SQL Editor에서 <b>schema.sql</b>을 다시 실행해 주세요.</div>'; return; }
+  renderPackList({ box, jid: PACK_TEMPLATE_ID, rerender: renderPackSettings, template: true });
+}
+function openPackSettings() {
+  closeSettings(); showTab('packset');
+  // 처음 열면 처음 목록을 저장해 두고 거기서부터 고침 (ID를 정해 둬서 두 기기에서 동시에 열어도 한 벌만)
+  if (DATA && !DATA.noStep4 && !packOf(PACK_TEMPLATE_ID).length) {
+    ensureTemplateJourney();
+    const seed = newPackItems(PACK_TEMPLATE_ID, builtinTemplate(), n => 'pkt_' + (n + 1));
+    DATA.packItems = (DATA.packItems || []).concat(seed);
+    saveRows('pack_items', seed.map(packItemToRow));
+    saveLocal();
+  }
+  renderPackSettings();
+}
+$('packSetBtn').onclick = openPackSettings;
+$('packSetBack').onclick = () => { showTab('stats'); openSettings(); };
