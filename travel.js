@@ -78,10 +78,7 @@ function flightLegs(list) {
     const leg = legs[legs.length - 1];
     const prev = leg && leg.segs[leg.segs.length - 1];
     let gap = null;
-    if (prev) {
-      const a = arrUtc(prev), d = depUtc(f);
-      gap = a != null && d != null ? Math.round((d - a) / 60000) : null;
-    }
+    if (prev) gap = layoverMinutes(prev, f);
     const connects = prev && (gap != null ? gap >= 0 && gap <= 24 * 60 : prev.arr.iata && prev.arr.iata === f.dep.iata && dayDiff(prev.arr.time || prev.dep.time, f.dep.time) <= 1);
     if (connects) { leg.layovers.push(gap); leg.segs.push(f); } else legs.push({ segs: [f], layovers: [] });
   });
@@ -90,6 +87,38 @@ function flightLegs(list) {
     l.kind = sideCc(first.dep) === 'KR' ? 'out' : sideCc(last.arr) === 'KR' ? 'back' : 'move';
   });
   return legs;
+}
+/** 앞 편 도착 ~ 다음 편 출발 (분). 같은 공항이면 시간대를 몰라도 현지 시각끼리 빼면 됨 */
+function layoverMinutes(prev, next) {
+  const a = arrUtc(prev), d = depUtc(next);
+  if (a != null && d != null) return Math.round((d - a) / 60000);
+  if (prev.arr.time && next.dep.time && prev.arr.iata && prev.arr.iata === next.dep.iata)
+    return Math.round((Date.parse(next.dep.time + ':00Z') - Date.parse(prev.arr.time + ':00Z')) / 60000);
+  return null;
+}
+/** 환승(현지 체류) 시간을 보고 한 줄 안내 { text, warn } */
+function layoverNote(prev, next, gap) {
+  const city = esc(sideName(next.dep) || next.dep.iata || '경유지');
+  const notes = [];
+  let warn = false, head;
+  if (gap == null) head = `⏱ ${city}에서 환승 <span class="note">(시간을 넣으면 체류 시간을 계산해요)</span>`;
+  else if (gap < 0) { head = `⚠️ ${city}: 앞 편 도착보다 먼저 출발해요. 시간을 확인해 주세요`; warn = true; }
+  else if (gap < 60) { head = `⚠️ ${city}에서 <b>${fmtDur(gap)}</b> 빠듯한 환승`; notes.push('짐 연결·터미널 이동을 꼭 확인'); warn = true; }
+  else if (gap < 180) head = `⏱ ${city}에서 <b>${fmtDur(gap)}</b> 환승`;
+  else if (gap < 480) { head = `☕ ${city}에서 <b>${fmtDur(gap)}</b> 머물러요`; notes.push('라운지·식사하기 좋아요'); }
+  else { head = `🏙️ ${city}에서 <b>${fmtDur(gap)}</b> 머물러요`; notes.push('시내 구경도 가능 (입국·비자 규정 확인)'); }
+  if (gap != null && gap >= 180 && prev.arr.time && next.dep.time && prev.arr.time.slice(0, 10) !== next.dep.time.slice(0, 10)) notes.push('🌙 밤을 넘겨요 · 숙소나 라운지 확인');
+  if (prev.arr.iata && next.dep.iata && prev.arr.iata !== next.dep.iata) { notes.push(`⚠️ 도착 ${esc(prev.arr.iata)} → 출발 ${esc(next.dep.iata)}, 공항이 달라요 · 이동 시간 확인`); warn = true; }
+  return { text: head + (notes.length ? `<div class="lnote">${notes.join(' · ')}</div>` : ''), plain: head.replace(/<[^>]+>/g, ''), warn };
+}
+/** 여정 전체: 첫 출발 ~ 마지막 도착, 그중 비행·환승 */
+function legTotals(l) {
+  const d = depUtc(l.segs[0]), a = arrUtc(l.segs[l.segs.length - 1]);
+  const fly = l.segs.map(flightMinutes);
+  const wait = l.layovers;
+  return { total: d != null && a != null ? Math.round((a - d) / 60000) : null,
+    fly: fly.every(x => x != null) ? fly.reduce((n, x) => n + x, 0) : null,
+    wait: wait.every(x => x != null) ? wait.reduce((n, x) => n + x, 0) : null };
 }
 const LEG_NAME = { out: '🛫 가는 편', back: '🛬 오는 편', move: '✈️ 이동' };
 const STATUS_KO = { Scheduled: '예정', Expected: '예정', EnRoute: '비행 중', CheckIn: '체크인 중', Boarding: '탑승 중', GateClosed: '탑승 마감',
@@ -137,10 +166,20 @@ function flightCard(i) {
   const hasBack = legs.some(l => l.kind === 'back');
   return `<div class="card">
     <div class="chead"><h3 class="ch">✈️ 항공편</h3><button class="btn small" id="fAdd">＋ 추가</button></div>
-    ${legs.map(l => `<div class="leg">
-      <div class="leghead">${LEG_NAME[l.kind]} <span class="note">${mdw(l.segs[0].dep.time)}${l.segs.length > 1 ? ` · 경유 ${l.segs.length - 1}회` : ''}</span></div>
-      ${l.segs.map((f, n) => (n ? `<div class="layover">⏱ ${esc(sideName(f.dep) || f.dep.iata)}에서 ${l.layovers[n - 1] != null ? fmtDur(l.layovers[n - 1]) + ' ' : ''}환승</div>` : '') + segHtml(f, i)).join('')}
-    </div>`).join('') || '<div class="note">날짜와 편명만 넣으면 시간·공항·터미널을 불러와요. 편도·왕복·경유 모두 구간별로 넣으면 돼요.</div>'}
+    ${legs.map((l, k) => {
+      const t = legTotals(l);
+      const prevLeg = legs[k - 1];
+      // 앞 여정과 3일 안에 같은 곳에서 이어지면 그 사이 체류(스톱오버)도 보여 줌
+      let stop = '';
+      if (prevLeg) {
+        const p = prevLeg.segs[prevLeg.segs.length - 1], gap = layoverMinutes(p, l.segs[0]);
+        if (gap != null && gap > 24 * 60 && gap < 72 * 60) stop = `<div class="stopover">🏨 ${esc(sideName(l.segs[0].dep) || l.segs[0].dep.iata)}에서 <b>${Math.floor(gap / 1440)}일 ${fmtDur(gap % 1440)}</b> 머물러요</div>`;
+      }
+      return `${stop}<div class="leg">
+      <div class="leghead">${LEG_NAME[l.kind]} <span class="note">${mdw(l.segs[0].dep.time)}${l.segs.length > 1 ? ` · 경유 ${l.segs.length - 1}회` : ''}</span>
+        ${l.segs.length > 1 && t.total != null ? `<div class="legtotal">총 <b>${fmtDur(t.total)}</b>${t.fly != null && t.wait != null ? ` (비행 ${fmtDur(t.fly)} · 경유지 체류 ${fmtDur(t.wait)})` : ''}</div>` : ''}</div>
+      ${l.segs.map((f, n) => { if (!n) return segHtml(f, i); const ln = layoverNote(l.segs[n - 1], f, l.layovers[n - 1]); return `<div class="layover ${ln.warn ? 'warn' : ''}">${ln.text}</div>` + segHtml(f, i); }).join('')}
+    </div>`; }).join('') || '<div class="note">날짜와 편명만 넣으면 시간·공항·터미널을 불러와요. 편도·왕복·경유 모두 구간별로 넣으면 돼요.</div>'}
     ${legs.length && !hasBack ? '<div class="actions"><button class="btn ghost small" id="fBack">＋ 오는 편 추가</button></div>' : ''}
   </div>`;
 }
@@ -529,10 +568,13 @@ function travelDayItems(i) {
   const row = (attr, icon, title, sub, extra) => `<div class="erow auto" ${attr}>
       <span class="eicon auto">${icon}</span>
       <div style="flex:1;min-width:0" data-open>${title}${sub ? `<div class="who">${sub}</div>` : ''}</div>${extra || ''}</div>`;
+  const layoverOf = {};
+  flightLegs(flightsOf(i.journey.id)).forEach(l => l.segs.forEach((f, n) => { if (n) layoverOf[f.id] = layoverNote(l.segs[n - 1], f, l.layovers[n - 1]); }));
   flightsOf(i.journey.id).forEach(f => {
     const pax = f.passengers.length && f.passengers.length < i.people.length ? '탑승 ' + esc(f.passengers.join(', ')) : '';
     const dDate = f.dep.time.slice(0, 10), aDate = f.arr.time.slice(0, 10);
-    const sub = [esc(f.airline), fmtDur(flightMinutes(f)), f.dep.gate && `<b>게이트 ${esc(f.dep.gate)}</b>`, pax].filter(Boolean).join(' · ');
+    const sub = [layoverOf[f.id] && `<span class="${layoverOf[f.id].warn ? 'lwarn' : ''}">${layoverOf[f.id].plain}</span>`,
+      esc(f.airline), fmtDur(flightMinutes(f)), f.dep.gate && `<b>게이트 ${esc(f.dep.gate)}</b>`, pax].filter(Boolean).join(' · ');
     put(dDate, hm(f.dep.time), row(`data-tflight="${esc(f.id)}"`, '✈️',
       `<b>${esc(f.flightNo || '항공편')}</b> ${hm(f.dep.time)} ${esc(f.dep.iata)}${termText(f.dep)} → ${hm(f.arr.time)}${aDate && aDate !== dDate ? '<sup>+' + dayDiff(dDate, aDate) + '</sup>' : ''} ${esc(f.arr.iata)}`, sub));
     if (aDate && aDate !== dDate) {
