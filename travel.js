@@ -399,7 +399,16 @@ function renderFlightForm(i) {
   };
   ['fDepTime', 'fArrTime', 'fArrDate', 'fDepAp', 'fArrAp'].forEach(id => $(id).addEventListener('change', showDur));
   showDur();
-  $('fDate').addEventListener('change', () => { if (!$('fArrDate').value || $('fArrDate').value < $('fDate').value) $('fArrDate').value = $('fDate').value; });
+  // 출발 날짜를 바꾸면 도착 날짜도 같이 옮김 (당일 도착이면 같은 날, 다음 날 도착이면 +1 그대로)
+  let lastDep = $('fDate').value;
+  $('fDate').addEventListener('change', () => {
+    const dep = $('fDate').value, arrD = $('fArrDate').value;
+    if (!dep) return;
+    let off = lastDep && arrD ? dayDiff(lastDep, arrD) : 0;
+    if (off < -1 || off > 2) off = 0;   // 기간 끝날짜 같은 엉뚱한 값이면 출발과 같은 날로
+    $('fArrDate').value = addDays(dep, off);
+    lastDep = dep; showDur();
+  });
   $('fPax').querySelectorAll('[data-pax]').forEach(b => b.onclick = () => {
     read(); const p = b.dataset.pax;
     f.passengers = f.passengers.includes(p) ? f.passengers.filter(x => x !== p) : f.passengers.concat(p);
